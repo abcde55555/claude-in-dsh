@@ -85,7 +85,12 @@ return {
 
     // Only what dsh has no class for: a left-anchored menu and the two previews.
     styles.insert(`
-      .ccmode-menu-left { left:0; right:auto; }
+      /* dsh 的 _7KE1Ra_menu 是 position:fixed（它的 JS 用 getBoundingClientRect 设 inline top/left）。
+         本插件复用了该 class 但没跑那套 JS，所以 fixed 无偏移时落到 static position。
+         原规则 left:0 对 fixed 元素的包含块是【视口】，会把菜单甩到屏幕最左边 ——
+         这就是「菜单不贴 trigger」的原因。改成 absolute 相对 SEL.root（它已是 position:relative），
+         即可锚定在 trigger 正下方左对齐。 */
+      .ccmode-menu-left { position:absolute; left:0; right:auto; top:calc(100% + 4px); }
       /* dsh's own access selector (PermissionSelect) — replaced, not doubled */
       body[data-ccmode="claude"] .Sh0Q9G_trigger { display:none; }
       .ccmode-diff-add { color:var(--dsw-alias-state-success-primary, #3fb950); }

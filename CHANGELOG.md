@@ -2,6 +2,34 @@
 
 本文件记录 claude-in-dsh 的版本变化。遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## 1.8.2-dsh015 — 2026-09-16
+
+### 修复
+
+- **下拉菜单不贴 trigger，跑到屏幕最左边**。dsh 的 `_7KE1Ra_menu` 是 `position:fixed`
+  （它的 JS 用 `getBoundingClientRect()` 设 inline `top`/`left`），本插件复用了该 class
+  但没跑那套 JS。原规则 `.ccmode-menu-left { left:0 }` 对 fixed 元素的包含块是**视口**，
+  于是菜单被推到屏幕最左。改为 `position:absolute` 相对 `SEL.root`（本就是
+  `position:relative`）并 `top:calc(100% + 4px)`，菜单即锚定在 trigger 正下方左对齐。
+  影响引擎选择器与权限选择器两处（都用 `align:'left'`）。
+
+### 新增
+
+- **支持自定义模型**。Claude 引擎模式下模型座原本只列写死的 7 个 Claude 模型；
+  但如果 `claude` CLI 走自建网关（`ANTHROPIC_BASE_URL`），`--model` 的值是**原样透传**的，
+  任何网关认识的模型名都能用。现在把额外模型写进 `~/.cache/ccmode/models.json` 即可：
+
+  ```json
+  [
+    { "id": "deepseek-v4.1-flash", "name": "DeepSeek V4.1 Flash", "reasoning": true }
+  ]
+  ```
+
+  同 id 以内置为准（不覆盖）；文件缺失或 JSON 非法时静默回退到内置清单。
+  也支持 `{ "defaultModel": "..." }` 覆盖新会话的默认模型。
+
+  `catalog` RPC 因此改为 async。
+
 ## 1.8.1-dsh015 — 2026-09-16
 
 ### 修复

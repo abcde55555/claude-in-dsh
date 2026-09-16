@@ -103,6 +103,60 @@ return {
     /** What a brand-new Claude conversation runs, absent any choice. */
     const DEFAULT_MODEL = 'claude-opus-5'
 
+    /**
+     * 读 MODELS_PATH 里的额外模型并合并进内置清单。
+     * 同 id 保留内置项；非法条目跳过。读不到就返回内置清单。
+     */
+    async function modelsForCatalog() {
+      let raw = ''
+      try {
+        raw = await runCapture(['/bin/sh', '-c', 'cat ' + MODELS_PATH + ' 2>/dev/null'], 3000)
+      } catch (error) { return MODELS }
+      const text = String(raw || '').trim()
+      if (text.length === 0) return MODELS
+      let extra
+      try { extra = JSON.parse(text) } catch (error) {
+        console.error('cc-mode: ' + MODELS_PATH + ' 不是合法 JSON，已忽略')
+        return MODELS
+      }
+      if (!Array.isArray(extra)) return MODELS
+      const seen = new Set(MODELS.map((m) => m.id))
+      const merged = MODELS.slice()
+      for (const entry of extra) {
+        if (entry === null || typeof entry !== 'object') continue
+        const id = typeof entry.id === 'string' ? entry.id.trim() : ''
+        if (id.length === 0 || seen.has(id)) continue
+        merged.push({
+          id: id,
+          name: typeof entry.name === 'string' && entry.name.length > 0 ? entry.name : id,
+          reasoning: entry.reasoning !== false,
+        })
+        seen.add(id)
+      }
+      return merged
+    }
+
+    /**
+     * 允许用 `{ "defaultModel": "..." }` 覆盖新会话的默认模型。
+     * 接受字符串（直接是 id）或对象（含 defaultModel 字段）。
+     */
+    async function defaultModelForCatalog() {
+      let raw = ''
+      try {
+        raw = await runCapture(['/bin/sh', '-c', 'cat ' + MODELS_PATH + ' 2>/dev/null'], 3000)
+      } catch (error) { return DEFAULT_MODEL }
+      const text = String(raw || '').trim()
+      if (text.length === 0) return DEFAULT_MODEL
+      let parsed
+      try { parsed = JSON.parse(text) } catch (error) { return DEFAULT_MODEL }
+      if (typeof parsed === 'string' && parsed.trim().length > 0) return parsed.trim()
+      if (parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)
+          && typeof parsed.defaultModel === 'string' && parsed.defaultModel.trim().length > 0) {
+        return parsed.defaultModel.trim()
+      }
+      return DEFAULT_MODEL
+    }
+
     // How much context each model actually has. Claude Code advertises the 1M
     // window as a model suffix (`claude-opus-5[1m]`), which is why the route
     // string, not the chosen id, decides.
@@ -373,6 +427,19 @@ return {
     // up again — posture, model, and above all the Claude session id to resume.
     const STATE_DIR = '"$HOME"/.cache/ccmode'
     const STATE_PATH = STATE_DIR + '/state.json'
+    /**
+     * 自定义模型清单（可选）。
+     *
+     * Claude 引擎模式下，模型座列出的是下面 MODELS 里写死的 Claude 模型。
+     * 但如果你的 `claude` CLI 走自建网关（`ANTHROPIC_BASE_URL`），`--model`
+     * 的值是**原样**透传给 CLI 的，所以任何你的网关认识的模型名都能用。
+     * 把额外模型写进这个文件即可出现在选择器里：
+     *
+     *   [{ "id": "deepseek-v4.1-flash", "name": "DeepSeek V4.1 Flash", "reasoning": true }]
+     *
+     * 同 id 以 MODELS 里的为准（不覆盖内置项）。文件不存在或解析失败时静默忽略。
+     */
+    const MODELS_PATH = STATE_DIR + '/models.json'
     let statePersistScheduled = false
     const runs = new Map()    // dsh sessionId -> resident claude run
     const activeTurns = new Map()  // dsh sessionId -> { turn, run } while a turn is open
@@ -4318,11 +4385,11 @@ return {
     }
 
     const disposers = [
-      harness.handle('catalog', () => ({
-        models: MODELS,
+      harness.handle('catalog', async () => ({
+        models: await modelsForCatalog(),
         efforts: EFFORTS,
         permissionModes: PERMISSION_MODES,
-        defaultModel: DEFAULT_MODEL,
+        defaultModel: await defaultModelForCatalog(),
       })),
 
       // dsh's attachment store rejects an image bigger than these; the client
