@@ -44,6 +44,26 @@
 >
 > ---
 
+> ### 自定义模型（本 fork 新增）
+>
+> Claude 引擎模式下模型座默认只列 7 个 Claude 模型。但如果 `claude` CLI 走自建网关
+> （`ANTHROPIC_BASE_URL`），`--model` 的值是**原样透传**的——任何网关认识的模型名都能用。
+>
+> 把额外模型写进 `~/.cache/ccmode/models.json` 即可出现在选择器里：
+>
+> ```json
+> [
+>   { "id": "deepseek-v4.1-flash", "name": "DeepSeek V4.1 Flash", "reasoning": true },
+>   { "id": "kimi-k2.7-code",      "name": "Kimi K2.7 Code",      "reasoning": true }
+> ]
+> ```
+>
+> 也支持覆盖新会话默认模型：`{ "defaultModel": "deepseek-v4.1-flash" }`（可与数组二选一，
+> 或写成对象形式 `{ "defaultModel": "...", "models": [...] }` 中的 defaultModel 字段）。
+> 同 id 以内置为准；文件缺失或 JSON 非法时静默回退。
+>
+> ---
+
 把 **DeepSeek Harness (dsh web)** 的一个会话交给**本机 Claude Code CLI** 驱动。所有 agent 工作都发生在本机 `claude` 里；dsh web 只负责接收流并用它**原生的**会话渲染展示 —— 转录、工具卡片、审批、命令面板，没有任何自绘的对话 UI。
 
 ## 功能
