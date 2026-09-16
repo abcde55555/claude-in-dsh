@@ -41,11 +41,9 @@ return {
     function trace(session, fromSeq) {
       const rows = []
       let chunks = 0
-      for (const event of session.events) {
+      for (const event of session.snapshotEvents()) {
         if (event.seq < fromSeq) continue
         const data = event.data || {}
-        if (event.type === 'assistant/chunk') { chunks += 1; continue }
-        if (chunks > 0) { rows.push('chunk×' + chunks); chunks = 0 }
         if (event.type === 'user/message') {
           const source = data.source || (data.message && data.message.source) || {}
           rows.push('user/message[' + (source.kind || '?') + (source.plugin ? ':' + source.plugin : '') + ']')
@@ -54,16 +52,22 @@ return {
           const kinds = content.map((block) => block.type === 'text'
             ? 'text(' + String(block.text || '').replace(/\s+/g, ' ').slice(0, 40) + ')'
             : block.type === 'tool-call' ? 'call:' + block.name : block.type)
-          rows.push('assistant/message{' + kinds.join(',') + '}' + (data.usage ? ' usage:' + data.usage.inputTokens + '/' + data.usage.outputTokens : ''))
+          // dsh 0.1.5 起 chunk 不再单独成事件，内嵌在 data.stream 里
+          const streamed = Array.isArray(data.stream)
+            ? data.stream.reduce((sum, r) => sum + (r.type === 'chunk' ? 1 : ((r.texts || r.args || []).length)), 0)
+            : 0
+          rows.push('assistant/message{' + kinds.join(',') + '}'
+            + (streamed > 0 ? ' chunk×' + streamed : '')
+            + (data.usage ? ' usage:' + data.usage.inputTokens + '/' + data.usage.outputTokens : ''))
         } else if (event.type === 'tool/call') {
           rows.push('tool/call ' + data.name + ' ' + String(data.arguments || '').replace(/\s+/g, ' ').slice(0, 60))
         } else if (event.type === 'tool/result') {
           const block = data.message && data.message.content ? data.message.content[0] : {}
           const text = (block.content || []).map((part) => part.text || '').join(' ').replace(/\s+/g, ' ').slice(0, 60)
           rows.push('tool/result' + (block.isError ? '!ERR' : '') + ' ' + text)
-        } else if (event.type === 'tool/code-dispatch-start') {
+        } else if (event.type === 'tool/ptc-dispatch-start') {
           rows.push('  sub/start ' + data.name + ' parent=' + String(data.parentCallId).slice(-6))
-        } else if (event.type === 'tool/code-dispatch') {
+        } else if (event.type === 'tool/ptc-dispatch') {
           rows.push('  sub/end   ' + data.name + (data.isError ? '!ERR' : ''))
         } else if (event.type === 'request/header') {
           rows.push('request/header ' + JSON.stringify(data.header && data.header.config))
@@ -94,14 +98,14 @@ return {
 
     /** Send one prompt and wait until the turn closes (or the deadline passes). */
     async function turn(agent, text, deadlineMs) {
-      const from = agent.session.events.length
+      const from = agent.session.snapshotEvents().length
       agent.send(userMessage(text), 'next-turn', true)
       const limit = deadlineMs === undefined ? 180000 : deadlineMs
       let waited = 0
       while (waited < limit && !stopped) {
         await sleep(1000)
         waited += 1000
-        const ended = agent.session.events.some((event) => event.seq >= from && event.type === 'turn/end')
+        const ended = agent.session.snapshotEvents().some((event) => event.seq >= from && event.type === 'turn/end')
         if (ended) break
       }
       return trace(agent.session, from)
@@ -150,7 +154,7 @@ return {
       const agent = await newSession('cancel')
       control.setMode(agent.id, 'claude')
       control.setPosture(agent.id, 'acceptEdits')
-      const from = agent.session.events.length
+      const from = agent.session.snapshotEvents().length
       agent.send(userMessage('用 Bash 执行 `sleep 60 && echo done`，然后告诉我结果。'), 'next-turn', true)
       await sleep(12000)
       log('S4 cancelling…')
@@ -182,7 +186,7 @@ return {
       const agent = await newSession('steer')
       control.setMode(agent.id, 'claude')
       control.setPosture(agent.id, 'acceptEdits')
-      const from = agent.session.events.length
+      const from = agent.session.snapshotEvents().length
       agent.send(userMessage('数到 20，一行一个数字，中间每个数字之间停顿一下再继续。'), 'next-turn', true)
       await sleep(9000)
       log('S7 steering mid-turn…')
@@ -190,7 +194,7 @@ return {
       let waited = 0
       while (waited < 120000 && !stopped) {
         await sleep(1000); waited += 1000
-        if (agent.session.events.some((e) => e.seq >= from && e.type === 'turn/end')) break
+        if (agent.session.snapshotEvents().some((e) => e.seq >= from && e.type === 'turn/end')) break
       }
       report('S7 steer into the running turn', trace(agent.session, from))
       control.setMode(agent.id, 'dsh')
@@ -201,7 +205,7 @@ return {
       const agent = await newSession('cancel2')
       control.setMode(agent.id, 'claude')
       control.setPosture(agent.id, 'acceptEdits')
-      const from = agent.session.events.length
+      const from = agent.session.snapshotEvents().length
       agent.send(userMessage('写一段 800 字的中文散文，讲夏天的雨，不要用工具。'), 'next-turn', true)
       await sleep(8000)
       log('S8 cancelling a streaming turn…')
@@ -247,7 +251,7 @@ return {
       const agent = await newSession('cancel3')
       control.setMode(agent.id, 'claude')
       control.setPosture(agent.id, 'acceptEdits')
-      const from = agent.session.events.length
+      const from = agent.session.snapshotEvents().length
       agent.send(userMessage('写一段 600 字的中文散文，讲秋天的风，不要用工具。'), 'next-turn', true)
       await sleep(8000)
       log('S12 cancelling a streaming turn (expect no error notice)…')
@@ -297,7 +301,7 @@ return {
       control.setPosture(agent.id, 'acceptEdits')
 
       // C1: cancel while the model is streaming text
-      let from = agent.session.events.length
+      let from = agent.session.snapshotEvents().length
       agent.send(userMessage('写一段 800 字的中文散文，讲冬天的海，不要用工具。'), 'next-turn', true)
       await sleep(9000)
       const t0 = Date.now()
@@ -306,13 +310,13 @@ return {
       let waited = 0
       while (waited < 40000) {
         await sleep(500); waited += 500
-        if (agent.session.events.some((e) => e.seq >= from && e.type === 'turn/end')) break
+        if (agent.session.snapshotEvents().some((e) => e.seq >= from && e.type === 'turn/end')) break
       }
       log('C1 turn closed after', Date.now() - t0, 'ms')
       report('C1 cancel while streaming', trace(agent.session, from).slice(-4))
 
       // C2: cancel while a tool is running
-      from = agent.session.events.length
+      from = agent.session.snapshotEvents().length
       agent.send(userMessage('用 Bash 执行 `for i in $(seq 1 30); do echo $i; sleep 1; done`，然后总结。'), 'next-turn', true)
       await sleep(12000)
       const t1 = Date.now()
@@ -321,7 +325,7 @@ return {
       waited = 0
       while (waited < 40000) {
         await sleep(500); waited += 500
-        if (agent.session.events.some((e) => e.seq >= from && e.type === 'turn/end')) break
+        if (agent.session.snapshotEvents().some((e) => e.seq >= from && e.type === 'turn/end')) break
       }
       log('C2 turn closed after', Date.now() - t1, 'ms')
       report('C2 cancel during a tool run', trace(agent.session, from).slice(-4))
@@ -340,7 +344,7 @@ return {
       log('T1 session dir:', dir)
 
       // a turn long enough to still be running when we let go of it
-      const from = agent.session.events.length
+      const from = agent.session.snapshotEvents().length
       agent.send(userMessage('用 Bash 依次执行这三条，每条都要单独调用一次工具：`echo one`、`echo two`、`echo three`，然后总结。'), 'next-turn', true)
       await sleep(9000)
       log('T2 detaching mid-turn (this is what a hot update does)…')
@@ -366,10 +370,10 @@ return {
       const agent = await newSession('toolnames')
       control.setMode(agent.id, 'claude')
       control.setPosture(agent.id, 'acceptEdits')
-      const from = agent.session.events.length
+      const from = agent.session.snapshotEvents().length
       await turn(agent, '做两件事，不要解释：1) 用 Bash 跑 `echo cc-name-check`；2) 读 /root/code/deepseek/AGENTS.md 的前 3 行。', 240000)
       const names = []
-      for (const event of agent.session.events) {
+      for (const event of agent.session.snapshotEvents()) {
         if (event.seq < from) continue
         if (event.type === 'tool/call') names.push(event.data.name + ' ' + String(event.data.arguments).slice(0, 50))
       }

@@ -1,5 +1,49 @@
 # claude-in-dsh
 
+> ## ⚠️ 这是 fork，不是上游
+>
+> 本仓库是 **[GeekRicardo/claude-in-dsh](https://github.com/GeekRicardo/claude-in-dsh)** 的 fork，
+> 只做了一件事：**修复与 DSH `0.1.5-rc.1` 的不兼容**（上游 1.8.0 在 DSH 0.1.5 上无法工作）。
+>
+> 上游最后提交 2026-08-27（`62e3805b`）。如果上游此后修复了同类问题，**建议优先用上游版本**。
+>
+> ### 装本 fork
+>
+> ```sh
+> dsh plugin --profile <name> add github:abcde55555/claude-in-dsh
+> ```
+>
+> `lib/` 已随仓库提交（与上游做法一致），**无需构建步骤**。
+>
+> ### 修了什么（4 处，共 19 个改动点）
+>
+> | # | 问题 | 修法 | 处数 |
+> |---|---|---|---|
+> | 1 | `session.events` 属性在 DSH 0.1.5 已被移除 | → `session.snapshotEvents()` | 15 |
+> | 2 | `tool/code-dispatch(-start)` 已改名 | → `tool/ptc-dispatch(-start)` | 2 |
+> | 3 | `assistant/chunk` 事件类型已移除 | 不再写事件，改为**内嵌压缩进 `assistant/message.stream`** | 重构 |
+> | 4 | `assistant/message` 禁止带 `sourceEventSeqs` | 去掉，改传 `stream: records` | 1 |
+>
+> **3 和 4 是同一个架构变更**：DSH 0.1.5 把流式数据从「N 个独立 chunk 事件」改成了**压缩记录内嵌**。
+> 新契约（`@deepseek-ai/dsh-llm` 的 `AssistantStreamRecord`）：
+>
+> ```ts
+> type AssistantStreamRecord =
+>   | { type:'text-chunks';      time0; index; dt:number[]; texts:string[] }
+>   | { type:'reasoning-chunks'; time0; index; dt:number[]; texts:string[] }
+>   | { type:'tool-call-chunks'; time0; index; dt:number[]; id; name?; args:string[] }
+>   | { type:'chunk'; time; chunk:StreamChunk }
+> ```
+>
+> 压缩规则：三种 delta 按 `(type, index)` 打包成 run，`time0` 是首个 chunk 的时间，
+> `dt[i]` 是相对前一个的增量时间；其余 chunk 原样存成 `{type:'chunk'}`。
+> 官方对应实现是 `AssistantStreamAccumulator`；本 fork 按它的语义内联实现（插件是零 import 设计）。
+>
+> 改动落在 `src/host.dynamic.js`（引擎本体）+ `src/tests-host.dynamic.js`（测试工具），
+> `lib/` 由 `pnpm build` 重新生成。
+>
+> ---
+
 把 **DeepSeek Harness (dsh web)** 的一个会话交给**本机 Claude Code CLI** 驱动。所有 agent 工作都发生在本机 `claude` 里；dsh web 只负责接收流并用它**原生的**会话渲染展示 —— 转录、工具卡片、审批、命令面板，没有任何自绘的对话 UI。
 
 ## 功能

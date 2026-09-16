@@ -2,6 +2,37 @@
 
 本文件记录 claude-in-dsh 的版本变化。遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## 1.8.1-dsh015 — 2026-09-16
+
+### 修复
+
+- **兼容 DSH `0.1.5-rc.1`**（fork 独有，上游 1.8.0 无此修复）。上游版本在 DSH 0.1.5 上可用加载，
+  但一发消息即失败：`session.events is not iterable`。逐条排查后发现是 **4 个不兼容点**：
+
+  1. **`session.events` 属性已移除**（15 处）→ 改用 `session.snapshotEvents()`。
+     DSH 把读日志从属性改成了方法（`snapshotEvents()` / `ownEvents()` / `eventAt()`），
+     而 `append` 保留了 —— 所以写入路径不炸，**只有第一次读日志时才暴露**。
+
+  2. **`tool/code-dispatch` / `tool/code-dispatch-start` 改名**（2 处）→ `tool/ptc-dispatch` / `tool/ptc-dispatch-start`。
+
+  3. **`assistant/chunk` 事件类型已移除** → 不再为每个 chunk 写独立事件，
+     改为累积成**压缩记录**内嵌在 `assistant/message.stream` 里。
+
+  4. **`assistant/message` 不再接受 `sourceEventSeqs`**（1 处）→ 该事件自己就内嵌了 source stream，
+     携带它会被直接拒绝（`assistant/message embeds its source stream and cannot carry sourceEventSeqs`）。
+
+  3 与 4 是同一个变更：DSH 0.1.5 把流式传输从「事件序列」换成了「压缩记录内嵌」。
+  压缩格式见 `@deepseek-ai/dsh-llm` 的 `AssistantStreamRecord`；官方实现是 `AssistantStreamAccumulator`，
+  本 fork 按其语义内联实现（插件是零 import 的纯自包含设计，不能直接 import）。
+
+### 验证
+
+- 本机 DSH `0.1.5-rc.1` 实测：会话切到 Claude Code 引擎后可正常多轮对话，
+  转录/工具卡片/审批走 dsh 原生渲染。
+- 确认走的是**真实 Claude Code CLI**：`/opt/homebrew/bin/claude -p --input-format stream-json ... --model claude-opus-5`，
+  因此会加载 `~/.claude` 下的全部配置（skill / CLAUDE.md 等）。
+- `pnpm build` 从修好的 `src/` 生成的 `lib/index.js` 与手工修复版**字节一致**（双向验证）。
+
 ## 1.8.0 — 2026-08-25
 
 ### 新增
