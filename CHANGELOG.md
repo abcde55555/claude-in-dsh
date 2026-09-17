@@ -2,6 +2,58 @@
 
 本文件记录 claude-in-dsh 的版本变化。遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## 1.9.0-dsh015 — 2026-09-17
+
+### 新增
+
+- **Codex 引擎**。第三个引擎，和 Claude 那条路完全不同：没有常驻进程、没有 broker，
+  每一轮就是一次 `codex exec`（首发）或 `codex exec resume <thread>`（之后每一轮），
+  stdout 是 JSONL 事件流。对话存在 Codex 自己的 thread store 里，插件只持久化
+  thread id。会话日志依然由 dsh 的词汇写成，所以 UI 渲染是原生的：工具调用是 dsh
+  自己的 Bash 卡片，错误在转录里可见且**不锁会话**（换回能用的模型即可在同一
+  thread 上续接）。侧边栏徽章 ⌘ 与 Claude 的 ✳ 可区分。
+
+  三条与 Claude 不同的约束，都已实测：
+  - `resume` 不认 `-s/--sandbox` 也不认 `-C/--cd`；沙箱走 `-c sandbox_mode=…`，
+    cwd 由 spawn 决定（resume 按 cwd 过滤 thread，所以 cwd 必须设对）。
+  - Codex 没有 token 级增量，每轮重发完整历史 —— token 成本是架构代价，不是 bug。
+  - Codex 的 provider 不认 `claude-*`，请求必然 401（实测）。
+
+### 修复
+
+- **写坏会话的 `stream` 层级 bug**（本分支此前引入）。契约要求 `stream` 是**事件层**
+  字段，代码却写在 `message` 里 —— 写入时毫无异常，直到重新打开该会话，投影拿
+  `data.stream` 去迭代直接抛 `stream is not iterable`，而 dsh 的日志只追加，**写坏一次
+  这个会话就再也打不开**。三处写入点（Claude 的 `note()`、Codex 的 `note()`、
+  Claude/Codex 共用的失败提示）一并修正，并补了回归测试。
+
+  已损坏的会话（`session-ded1a36e`、`session-cebff2fb`）留在归档里，不可恢复 ——
+  写入侧只能防新增。
+
+- **模型默认值按引擎分开**。此前 `defaults.model` 是单一全局槽位，而新会话的初值
+  不看引擎，于是：Codex 会话里选个模型会改掉新 Claude 会话开在哪个模型；更糟的是
+  还原状态文件那条路没有引擎校验，`mode: codex` + `model: claude-opus-5` 这种组合
+  能开局 401。现在两个引擎各有一个槽位（`model` / `codexModel`，后者空串＝跟随
+  codex 自己的 config.toml），`stateOf` 按引擎取，`rememberDefaults` 只写当前引擎
+  那个槽位，切引擎时载入目标引擎记着的默认。老状态文件带迁移，升级不丢已选模型。
+
+- **引擎适用性校验收敛到一处**。原先三处（`model.set` / `restoreStates` /
+  `loadPersistedStates`）各自判断，其中 `restoreStates` 漏了 —— 状态文件里的
+  「Codex 会话 + claude-*」能绕过防御层。现统一走 `modelFitsEngine()`。
+
+- **下拉菜单不贴触发器、且被视口底部切掉**。菜单借用 dsh 自己的 `menu` class
+  （`position: fixed`），但没跑 dsh 那套定位 JS，fixed 无偏移就落回**静态位置**：
+  实测菜单横向偏出 390px、底边 769 超出视口 720 共 49px（输入框本来就在屏幕最
+  下面，向下开必然被切）。`position: absolute` 也救不了 —— 外层 `scrollBody` 是
+  `overflow: auto`，会被滚动容器裁掉。现新增 `useAnchoredMenu()`：照 dsh 的做法
+  fixed + 现算坐标，**下面放不下就翻到上面**，横向贴住触发器且不探出视口。两处
+  菜单（通用 Select 与模型座）共用，失效的 `.ccmode-menu-left` 移除。
+
+- **模型座分组标题写死「Claude Code」**。Codex 会话里那份清单本来就是它自己的
+  模型，标题改成跟引擎走。
+
+- **徽章不重绘**：会话切到 Codex 后仍戴 Claude 的 ✳，现改为存在时也更新。
+
 ## 1.8.3-dsh015 — 2026-09-17
 
 ### 修复
