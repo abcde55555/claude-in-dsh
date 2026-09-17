@@ -107,17 +107,33 @@ return {
     /** What a brand-new Claude conversation runs, absent any choice. */
     const DEFAULT_MODEL = 'claude-opus-5'
 
+    /** 一个 id 是不是编译进来的内置模型。内置的只能隐藏，不能改名、改 id、删掉。 */
+    function isBuiltinModel(id) {
+      return MODELS.some((model) => model.id === id)
+    }
+
     /**
-     * 读 MODELS_PATH，返回 `{ models, defaultModel }`。
+     * 读 MODELS_PATH，返回一份规范化结果。
      *
      * 支持三种写法（都可选）：
      *   [ {...}, {...} ]                          → 纯数组，默认模型不变
      *   { "defaultModel": "x", "models": [...] }  → 对象
      *   { "defaultModel": "x" }                   → 只改默认
      * 同 id 以内置 MODELS 为准（不覆盖）；文件缺失或 JSON 非法时静默回退。
+     *
+     * `all` 与 `custom` 是两套：all 是内置 + 自定义合并后的清单（内置优先），
+     * custom 只是文件里写的那些。增删改一律以 custom 为对象 —— 拿 all 写回去
+     * 等于把内置项也刻进用户的文件，下次内置清单一变就会多出一份改不动的副本。
+     *
+     * `models` 是 all 去掉 hidden 之后的可选清单（模型座列的就是它），但被隐藏的
+     * id 仍然算 known：隐藏只是不再列出来，已经跑在这个模型上的会话不该因为一次
+     * 隐藏就恢复不了（见 isKnownModel）。
      */
     async function readModelsFile() {
-      const fallback = { models: MODELS, defaultModel: DEFAULT_MODEL }
+      const fallback = {
+        all: MODELS, custom: [], models: MODELS, hidden: [],
+        defaultModel: DEFAULT_MODEL, defaultCodexModel: '',
+      }
       let raw = ''
       try {
         raw = await runCapture(['/bin/sh', '-c', 'cat ' + MODELS_PATH + ' 2>/dev/null'], 3000)
@@ -129,27 +145,47 @@ return {
         console.error('cc-mode: ' + MODELS_PATH + ' 不是合法 JSON，已忽略')
         return fallback
       }
-      const list = Array.isArray(parsed) ? parsed : (Array.isArray(parsed && parsed.models) ? parsed.models : [])
-      const defaults = parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)
-        && typeof parsed.defaultModel === 'string' && parsed.defaultModel.trim().length > 0
-        ? parsed.defaultModel.trim() : ''
-      const seen = new Set(MODELS.map((m) => m.id))
-      const merged = MODELS.slice()
+      const object = parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : null
+      const list = Array.isArray(parsed) ? parsed : (Array.isArray(object && object.models) ? object.models : [])
+      const seen = new Set(MODELS.map((model) => model.id))
+      const custom = []
       for (const entry of list) {
         if (entry === null || typeof entry !== 'object') continue
         const id = typeof entry.id === 'string' ? entry.id.trim() : ''
         if (id.length === 0 || seen.has(id)) continue
-        merged.push({
+        custom.push({
           id: id,
-          name: typeof entry.name === 'string' && entry.name.length > 0 ? entry.name : id,
+          name: typeof entry.name === 'string' && entry.name.trim().length > 0 ? entry.name.trim() : id,
           reasoning: entry.reasoning !== false,
         })
         seen.add(id)
       }
-      // 默认模型：文件里指定的优先（且必须存在于合并后的清单里）
-      let defaultModel = DEFAULT_MODEL
-      if (defaults.length > 0 && merged.some((m) => m.id === defaults)) defaultModel = defaults
-      return { models: merged, defaultModel: defaultModel }
+      const all = MODELS.concat(custom)
+      const hidden = []
+      for (const entry of (object !== null && Array.isArray(object.hidden) ? object.hidden : [])) {
+        const id = typeof entry === 'string' ? entry.trim() : ''
+        // 只留清单里真有的 id：删掉一个自定义模型之后，它的隐藏标记就成了
+        // 一个用户看不懂的幽灵条目。
+        if (id.length > 0 && all.some((model) => model.id === id) && hidden.indexOf(id) === -1) hidden.push(id)
+      }
+      // 默认模型：文件里指定的优先，且必须存在于合并后的清单里。被隐藏的也认 ——
+      // 「默认」和「列不列出来」是两件事。
+      const askedDefault = object !== null && typeof object.defaultModel === 'string' ? object.defaultModel.trim() : ''
+      const defaultModel = askedDefault.length > 0 && all.some((model) => model.id === askedDefault)
+        ? askedDefault : DEFAULT_MODEL
+      // Codex 的默认模型单独一个槽位：两个引擎的清单不相通，共用一个的话在
+      // Codex 那边设一次就把 Claude 的默认也改了。空串＝跟随 codex 自己的
+      // config.toml，是合法取值；写了个 Codex 用不了的（claude-*）就落回空串，
+      // 因为那种组合开局必然 401。
+      const askedCodex = object !== null && typeof object.defaultCodexModel === 'string'
+        ? object.defaultCodexModel.trim() : ''
+      const defaultCodexModel = askedCodex.length > 0 && modelFitsEngine('codex', askedCodex)
+        && all.some((model) => model.id === askedCodex) ? askedCodex : ''
+      const hiddenSet = new Set(hidden)
+      return {
+        all: all, custom: custom, models: all.filter((model) => !hiddenSet.has(model.id)),
+        hidden: hidden, defaultModel: defaultModel, defaultCodexModel: defaultCodexModel,
+      }
     }
 
     /**
@@ -161,17 +197,201 @@ return {
      */
     let knownModelIds = new Set(MODELS.map((m) => m.id))
     let cachedDefaultModel = DEFAULT_MODEL
+    let cachedDefaultCodexModel = ''
 
     async function refreshKnownModels() {
       const answer = await readModelsFile()
-      knownModelIds = new Set(answer.models.map((m) => m.id))
+      knownModelIds = new Set(answer.all.map((m) => m.id))
       cachedDefaultModel = answer.defaultModel
+      cachedDefaultCodexModel = answer.defaultCodexModel
       return answer
     }
 
     /** 同步判断一个模型 id 是否可选（含自定义）。 */
     function isKnownModel(id) {
       return knownModelIds.has(id)
+    }
+
+    // ---------- 模型目录的编辑（设置面板用的那几个 RPC） ----------
+
+    /**
+     * 把一份 JSON 原子地写到一个 shell word 指的路径上。
+     *
+     * 原来是 `cat > 目标` 直接覆盖：写到一半插件热更新、或磁盘满，用户那份清单
+     * 就没了 —— 里面可能是他自己都记不清的模型名和网关地址对不上的 id。所以先写
+     * 同目录的临时文件再 rename：rename 是原子的，最坏只留下一个 .tmp。
+     */
+    function writeJsonFile(shellPath, value) {
+      const text = JSON.stringify(value, null, 2) + '\n'
+      const tmp = shellPath + '.tmp'
+      return new Promise((resolve, reject) => {
+        let proc
+        try {
+          proc = silenceStdin(subprocess.spawn({
+            argv: ['/bin/sh', '-c', 'mkdir -p ' + STATE_DIR + ' && cat > ' + tmp
+              + ' && mv -f ' + tmp + ' ' + shellPath],
+            cwd: '/',
+            stdio: { stdin: 'pipe', stdout: 'ignore', stderr: 'ignore' },
+            graceMs: 2000,
+          }))
+        } catch (error) { reject(error); return }
+        if (proc.stdin !== undefined) { proc.stdin.write(text); proc.stdin.end() }
+        proc.done.then((outcome) => {
+          // done 只在 spawn 失败时 reject，写失败（磁盘满、权限）是一个非零退出码，
+          // 不看它就等于「写没写进去都报成功」。
+          if (outcome !== null && outcome !== undefined && outcome.exitCode !== 0) {
+            reject(new Error('写入 ' + shellPath + ' 失败（退出码 ' + String(outcome.exitCode) + '）'))
+            return
+          }
+          resolve()
+        }, (error) => reject(error))
+      })
+    }
+
+    /**
+     * 展开 shell word 里的 "$HOME"，为了显示一个能照着去找的绝对路径。
+     * STATE_DIR 那几个常量必须留着 "$HOME" 让 shell 展开（见 fileSizeOfShellWord），
+     * 但设置面板要显示的是人看得懂的路径。
+     */
+    let cachedHome = null
+    async function expandHome(word) {
+      if (cachedHome === null) {
+        cachedHome = String(await runCapture(['/bin/sh', '-c', 'printf %s "$HOME"'], 3000)).trim()
+      }
+      const home = cachedHome.length > 0 ? cachedHome : '~'
+      return String(word).split('"$HOME"').join(home)
+    }
+
+    /** 一个显示名：空的自定义名字用 id 顶上，免得清单里出现一行空白。 */
+    function modelDisplayName(value, id) {
+      const name = typeof value === 'string' ? value.trim() : ''
+      return name.length > 0 ? name : id
+    }
+
+    /**
+     * 一次目录变更 = 一份新文件。校验整个结构，不合法就抛。
+     *
+     * 之所以整体过一遍而不是只查被改的那个字段：这个文件人和插件共写，一次
+     * 编辑顺手把别处写坏的结构带下去最糟 —— 用户的清单没有第二份可恢复。
+     *
+     * @param {{custom: Array, hidden: Array, defaultModel: string, defaultCodexModel: string}} state
+     *   readModelsFile() 的规范化结果（写回的只有 custom / hidden / 两个默认值）。
+     * @param {object} edit 见下面各分支；op 决定这次改什么。
+     * @returns {{defaultModel: string, defaultCodexModel: string, hidden: Array, models: Array}} 写回文件的对象。
+     */
+    function applyModelsEdit(state, edit) {
+      const custom = state.custom.map((model) => ({ id: model.id, name: model.name, reasoning: model.reasoning }))
+      const hidden = state.hidden.slice()
+      let defaultModel = state.defaultModel
+      let defaultCodexModel = state.defaultCodexModel
+      const op = String(edit.op || '')
+      const id = typeof edit.id === 'string' ? edit.id.trim() : ''
+      const isCustom = (value) => custom.some((model) => model.id === value)
+      const requireReasoning = () => {
+        if (typeof edit.reasoning !== 'boolean') throw new Error('reasoning 必须是布尔值')
+      }
+      if (op === 'add') {
+        if (id.length === 0) throw new Error('模型 id 不能为空')
+        // id 会原样进 CLI 的 --model，也会进状态文件；把字符集收在这里，后面
+        // 所有拿它拼字符串的地方就不必各自设防。
+        if (!/^[A-Za-z0-9][A-Za-z0-9._:@/-]*$/.test(id)) {
+          throw new Error('模型 id 只能用字母、数字和 . _ : @ / -（且不能以符号开头）')
+        }
+        if (isBuiltinModel(id) || isCustom(id)) throw new Error('模型 ' + id + ' 已经存在')
+        requireReasoning()
+        custom.push({ id: id, name: modelDisplayName(edit.name, id), reasoning: edit.reasoning })
+      } else if (op === 'update') {
+        // id 是身份，不是字段：改 id 等于删了重建，会话里记着的那个 id 会落空。
+        const target = custom.find((model) => model.id === id)
+        if (target === undefined) {
+          throw new Error(isBuiltinModel(id) ? '内置模型不能改，只能隐藏' : '没有这个自定义模型：' + id)
+        }
+        requireReasoning()
+        target.name = modelDisplayName(edit.name, id)
+        target.reasoning = edit.reasoning
+      } else if (op === 'remove') {
+        const at = custom.findIndex((model) => model.id === id)
+        if (at === -1) {
+          throw new Error(isBuiltinModel(id) ? '内置模型不能删除，只能隐藏' : '没有这个自定义模型：' + id)
+        }
+        custom.splice(at, 1)
+        // 顺手抹掉它的隐藏标记：留着的话，用户下次加回同一个 id，加进来就是
+        // 隐藏状态，而他并不会想到去看那个字段。
+        const hiddenAt = hidden.indexOf(id)
+        if (hiddenAt !== -1) hidden.splice(hiddenAt, 1)
+        // 删掉的正好是默认模型时落回安全值。不落的话，新会话会开在一个清单里
+        // 已经没有的模型上 —— Claude 那边是 CLI 报错，Codex 那边是 401。
+        if (defaultModel === id) defaultModel = DEFAULT_MODEL
+        if (defaultCodexModel === id) defaultCodexModel = ''
+      } else if (op === 'hide') {
+        if (!isBuiltinModel(id) && !isCustom(id)) throw new Error('没有这个模型：' + id)
+        if (typeof edit.hidden !== 'boolean') throw new Error('hidden 必须是布尔值')
+        const at = hidden.indexOf(id)
+        if (edit.hidden && at === -1) hidden.push(id)
+        if (!edit.hidden && at !== -1) hidden.splice(at, 1)
+      } else if (op === 'default') {
+        const engine = String(edit.engine || '')
+        const model = typeof edit.model === 'string' ? edit.model.trim() : ''
+        if (engine !== 'codex' && engine !== 'claude' && engine !== 'dsh') {
+          throw new Error('未知引擎：' + engine)
+        }
+        if (engine === 'codex') {
+          // 空串是合法取值，意思是「跟随 codex 自己的 config.toml」——不是
+          // 「没选」。除了空串就只能是它认识的名字，claude-* 送过去必然 401。
+          if (model.length > 0 && (!modelFitsEngine('codex', model) || !(isBuiltinModel(model) || isCustom(model)))) {
+            throw new Error('Codex 用不了 ' + model + '（它的 provider 不认 claude-* 模型）')
+          }
+          defaultCodexModel = model
+        } else {
+          // Claude/dsh 这一份不允许空：模型座里已经没有「跟随 Claude 自己的
+          // 设置」那一行了，默认值必须是一个具体模型。
+          if (model.length === 0) throw new Error('默认模型不能是空的')
+          if (!isBuiltinModel(model) && !isCustom(model)) throw new Error('没有这个模型：' + model)
+          defaultModel = model
+        }
+      } else {
+        throw new Error('未知操作：' + op)
+      }
+      return { defaultModel: defaultModel, defaultCodexModel: defaultCodexModel, hidden: hidden, models: custom }
+    }
+
+    /** 设置面板看到的目录：含隐藏项（带标记）和两个引擎各自的默认模型。 */
+    async function modelsState() {
+      const state = await readModelsFile()
+      const hidden = new Set(state.hidden)
+      return {
+        path: await expandHome(MODELS_PATH),
+        models: state.all.map((model) => ({
+          id: model.id,
+          name: model.name,
+          reasoning: model.reasoning !== false,
+          builtin: isBuiltinModel(model.id),
+          hidden: hidden.has(model.id),
+        })),
+        defaults: { claude: state.defaultModel, codex: state.defaultCodexModel },
+      }
+    }
+
+    /**
+     * 读 → 校验 → 原子写 → 刷新缓存 → 回读。
+     *
+     * 回读而不是把刚写的对象直接返回：文件是外部输入，写完它长什么样要以磁盘
+     * 为准，顺手也验证了这次写真的落地了。
+     */
+    async function modelsEdit(edit) {
+      const state = await readModelsFile()
+      await writeJsonFile(MODELS_PATH, applyModelsEdit(state, edit))
+      const fresh = await refreshKnownModels()
+      // 新会话开局的默认值有两个落点：models.json（部署级默认）和 state.json 的
+      // #defaults（用户上次显式选过的东西，见 rememberDefaults）。而启动时后者
+      // 覆盖前者，所以只写文件的话，这份更旧的显式选择会在下次重启把刚设的值盖
+      // 回去；两个都写，当下和重启后就都是它。
+      if (edit.op === 'default') {
+        if (String(edit.engine) === 'codex') defaults.codexModel = fresh.defaultCodexModel
+        else defaults.model = fresh.defaultModel
+        persistStates()
+      }
+      return modelsState()
     }
 
     /**
@@ -511,7 +731,7 @@ return {
     const STATE_DIR = '"$HOME"/.cache/ccmode'
     const STATE_PATH = STATE_DIR + '/state.json'
     /**
-     * 自定义模型清单（可选）。
+     * 模型目录（可选）。
      *
      * Claude 引擎模式下，模型座列出的是下面 MODELS 里写死的 Claude 模型。
      * 但如果你的 `claude` CLI 走自建网关（`ANTHROPIC_BASE_URL`），`--model`
@@ -521,6 +741,11 @@ return {
      *   [{ "id": "deepseek-v4.1-flash", "name": "DeepSeek V4.1 Flash", "reasoning": true }]
      *
      * 同 id 以 MODELS 里的为准（不覆盖内置项）。文件不存在或解析失败时静默忽略。
+     *
+     * 1.10 起这份文件还能写 `hidden`（哪些 id 不再出现在模型座里）和
+     * `defaultCodexModel`（Codex 引擎的默认模型，空串＝跟随它自己的 config.toml），
+     * 并且可以直接在设置面板里改，不必再手写。读法见 readModelsFile，写法见
+     * applyModelsEdit。
      */
     const MODELS_PATH = STATE_DIR + '/models.json'
     let statePersistScheduled = false
@@ -655,6 +880,12 @@ return {
       // 部署级默认：models.json 的 defaultModel（若配置了且合法）。
       // 下面持久化的 #defaults 是「用户上次显式选了什么」，优先级更高，会覆盖这里。
       if (isKnownModel(cachedDefaultModel)) defaults.model = cachedDefaultModel
+      // Codex 那一份同样。空串是「跟随 codex 自己的 config.toml」，所以它天然
+      // 合法，不需要校验名单。
+      if (cachedDefaultCodexModel === ''
+        || (isKnownModel(cachedDefaultCodexModel) && modelFitsEngine('codex', cachedDefaultCodexModel))) {
+        defaults.codexModel = cachedDefaultCodexModel
+      }
       const raw = await runCapture(['/bin/sh', '-c', 'cat ' + STATE_PATH + ' 2>/dev/null'], 5000)
       let stored = null
       try { stored = JSON.parse(raw) } catch (error) { stored = null }
@@ -5097,6 +5328,8 @@ return {
       harness.handle('catalog', async () => {
         const answer = await refreshKnownModels()
         return {
+          // models 是去掉隐藏项之后的清单：隐藏的意思就是「哪个引擎的模型座
+          // 里都别再出现它」（见 readModelsFile）。
           models: answer.models,
           efforts: EFFORTS,
           permissionModes: PERMISSION_MODES,
@@ -5104,6 +5337,34 @@ return {
           defaultModel: answer.defaultModel,
         }
       }),
+
+      // 模型目录的设置面板：读、增、改、删、隐藏/恢复、设默认值。
+      // 每个 handler 都返回 modelsState()，客户端拿它整份替换本地状态，省得
+      // 前端自己推演一遍「改完之后清单该长什么样」。
+      harness.handle('models.get', () => modelsState()),
+      harness.handle('models.add', (args) => modelsEdit({
+        op: 'add',
+        id: args.id,
+        name: args.name,
+        reasoning: args.reasoning,
+      })),
+      harness.handle('models.update', (args) => modelsEdit({
+        op: 'update',
+        id: args.id,
+        name: args.name,
+        reasoning: args.reasoning,
+      })),
+      harness.handle('models.remove', (args) => modelsEdit({ op: 'remove', id: args.id })),
+      harness.handle('models.hide', (args) => modelsEdit({
+        op: 'hide',
+        id: args.id,
+        hidden: args.hidden === true,
+      })),
+      harness.handle('models.default.set', (args) => modelsEdit({
+        op: 'default',
+        engine: args.engine,
+        model: args.model,
+      })),
 
       // dsh's attachment store rejects an image bigger than these; the client
       // half shrinks a paste to fit rather than letting the store refuse it.

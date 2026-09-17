@@ -49,18 +49,28 @@
 > Claude 引擎模式下模型座默认只列 7 个 Claude 模型。但如果 `claude` CLI 走自建网关
 > （`ANTHROPIC_BASE_URL`），`--model` 的值是**原样透传**的——任何网关认识的模型名都能用。
 >
-> 把额外模型写进 `~/.cache/ccmode/models.json` 即可出现在选择器里：
+> 在 dsh 的设置页里（侧边栏「设置」→「模型目录」）就能增删改这些模型、隐藏不用的
+> 内置项、分别设两个引擎的默认模型，改完立即生效，不用重启。也可以直接写
+> `~/.cache/ccmode/models.json`：
 >
 > ```json
-> [
->   { "id": "deepseek-v4.1-flash", "name": "DeepSeek V4.1 Flash", "reasoning": true },
->   { "id": "kimi-k2.7-code",      "name": "Kimi K2.7 Code",      "reasoning": true }
-> ]
+> {
+>   "defaultModel": "deepseek-v4.1-flash",
+>   "defaultCodexModel": "",
+>   "hidden": ["claude-opus-4-5"],
+>   "models": [
+>     { "id": "deepseek-v4.1-flash", "name": "DeepSeek V4.1 Flash", "reasoning": true },
+>     { "id": "kimi-k2.7-code",      "name": "Kimi K2.7 Code",      "reasoning": true }
+>   ]
+> }
 > ```
 >
-> 也支持覆盖新会话默认模型：`{ "defaultModel": "deepseek-v4.1-flash" }`（可与数组二选一，
-> 或写成对象形式 `{ "defaultModel": "...", "models": [...] }` 中的 defaultModel 字段）。
-> 同 id 以内置为准；文件缺失或 JSON 非法时静默回退。
+> - `defaultModel` —— Claude 与 DSH 共用的默认模型；`defaultCodexModel` —— Codex
+>   自己的那一份，空串＝跟随 codex 的 `config.toml`。两者**必须分开**，共用会在
+>   一边设默认时改掉另一边。
+> - `hidden` 里的 id 不再出现在任何引擎的模型座里（内置模型不能删，只能隐藏）。
+> - 简写仍然读得懂：整个文件是数组时就是纯 `models`，对象里也可以只写
+>   `defaultModel`。同 id 以内置为准；文件缺失或 JSON 非法时静默回退。
 >
 > ---
 
@@ -75,6 +85,7 @@
 - **提问桥接**：Claude 的 `AskUserQuestion` 不当权限问题处理，而是交给 dsh 的提问服务——你看到的是 dsh 自己那张提问卡片（选项 / 多选 / "其他"自由文本），答案原样回到 Claude。提问一律问人，不受权限档影响。
 - **计划审核桥接**：Claude 的 `ExitPlanMode` 用 dsh 自己的计划审核卡片审（和 dsh 的 `exit_plan_mode` 同一套 id/标签/intent）；批准即退出计划模式并把权限档落回监督档，选择继续规划则把你的反馈原样送回模型。
 - **模型 / effort**：模型座换成 Claude 的模型清单 + reasoning effort；运行中切模型走 `set_model` 控制请求（不重启进程），重连后自动补发。
+- **模型目录设置**：dsh 设置页里（侧边栏「设置」→「模型目录」）增删改自定义模型、隐藏不用的、分别设两个引擎的默认模型；写入是原子的，改完立即生效。
 - **命令面板**：Claude 的斜杠命令并入 dsh 面板（只在 Claude 会话出现）；与 dsh 撞名的保留前缀加 `-claude` 后缀并标注归属。`/mcp` `/context` `/usage` 这类**一次性命令**带外执行 —— 不起轮次、不进转录，结果开在独立面板里（`/mcp` 按 TUI 样式画出服务器分组列表）。
 - **进程与会话托管**：Claude 进程由独立 broker（`setsid`）持有 —— 插件热更新、dsh 重启都不会中断正在跑的轮次，重连后从字节偏移续读流。会话记录写进 `~/.claude`，终端里 `claude --resume` 能看到、也能继续。
 - **只有真人发言才唤醒 Claude**：dsh 插件系统注入的通知消息（Cordis 运行器等）不会替你烧一轮订阅额度，内容攒到你下次发言时一并带上。
