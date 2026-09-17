@@ -88,6 +88,8 @@
 - **引擎选择器**：输入框里一个和模型选择器同款的下拉（`DSH | Claude Code | Codex`），按会话切换。三个引擎严格互斥 —— 一个会话跑过谁，就永远属于谁（从会话日志推断，重启不丢）。名字可以改，各带一个来源标记（本地 / 远程），见下面的「引擎注册表」。
 - **引擎注册表**：设置页里（侧边栏「设置」→「引擎」）改三个引擎的显示名和来源标记，存在 `~/.cache/ccmode/agents.json`。改完引擎座、模型座分组标题、会话徽章 tooltip 一起改口。**只改显示**：能被执行的引擎仍然只有那三个，源头与执行方式都没变。
 - **Codex 引擎**：本机 `codex` CLI 驱动，dsh 只负责渲染。和 Claude 那条路不同，它没有常驻进程：每一轮是一次 `codex exec`（首发）或 `codex exec resume <thread>`（之后每一轮），对话存在 Codex 自己的 thread store 里，插件只持久化 thread id。工具调用渲染成 dsh 原生卡片，出错时转录里看得到、会话不锁（换个能用的模型即可在同一 thread 续接）。注意两点：Codex 每轮重发完整历史（没有 token 级增量，成本明显高于 Claude 那条），且它的 provider 不认 `claude-*` 模型（必然 401，所以模型清单按引擎过滤）。
+- **Codex 的图片**：粘贴的图片走 `codex exec -i <FILE>`（`exec` 与 `resume` 都认），转录里按 dsh 原生附件显示。临时文件在轮末删掉。
+- **Codex 的「插话」**：跑轮次时 Ctrl/Cmd+Enter 的那条消息**不会折进当前轮**（Codex 一轮就是一个进程，没有 stdin 可写），而是**排进 inbox、跟下一轮一起送出去**。实测：插话 + 之后正常发的下一条会同时出现在下一轮的输入里，模型对两条都作答。所以「插话」在 Codex 会话里的效果等于「抢先排在队首」，不是「中途打断」。
 - **原生渲染**：Claude 的流被写成 dsh 自己的持久会话事件（`assistant/chunk`、`assistant/message`、`tool/call`、`tool/result`…），所以持久化、投影、主题、其他插件（如 dsh-better-tool-ui 的工具行）全部照常工作。子 agent（Agent 工具）渲染为嵌套子调用。
 - **权限档替换**：切到 Claude 后，dsh 的访问模式选择器被 Claude 的权限档（manual / acceptEdits / auto / bypassPermissions / plan）替换；权限请求（`can_use_tool`）桥接到 dsh 原生审批 UI（若你配置了 Claude 的 PermissionRequest hook，则完全遵循你的 hook）。
 - **提问桥接**：Claude 的 `AskUserQuestion` 不当权限问题处理，而是交给 dsh 的提问服务——你看到的是 dsh 自己那张提问卡片（选项 / 多选 / "其他"自由文本），答案原样回到 Claude。提问一律问人，不受权限档影响。
