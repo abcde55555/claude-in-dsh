@@ -7,7 +7,7 @@
 # 下次启动 DSH 时 profile boot 会读取包内 cordis.patch.yml 自动挂载插件行。
 #
 # 用法：
-#   curl -fsSL https://raw.githubusercontent.com/GeekRicardo/claude-in-dsh/main/install.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/abcde55555/claude-in-dsh/main/install.sh | bash
 #   或本地：bash install.sh [--dry-run] [--restart] [--link /path/to/checkout]
 #
 #   --dry-run   只打印将要执行的操作，不写任何文件。
@@ -23,7 +23,7 @@ DSH_HOME="${DSH_HOME:-${HOME:-${USERPROFILE:-}}/.dsh}"
 PROFILE_DIR="$DSH_HOME/profiles/web"
 PKG_JSON="$PROFILE_DIR/package.json"
 PKG="claude-in-dsh"
-DEP="github:GeekRicardo/claude-in-dsh"
+DEP="github:abcde55555/claude-in-dsh"
 
 DRY_RUN=false
 RESTART=false

@@ -2,10 +2,17 @@
 
 > ## ⚠️ 这是 fork，不是上游
 >
-> 本仓库是 **[GeekRicardo/claude-in-dsh](https://github.com/GeekRicardo/claude-in-dsh)** 的 fork，
-> 只做了一件事：**修复与 DSH `0.1.5-rc.1` 的不兼容**（上游 1.8.0 在 DSH 0.1.5 上无法工作）。
+> 本仓库是 **[GeekRicardo/claude-in-dsh](https://github.com/GeekRicardo/claude-in-dsh)** 的 fork。
+> 起点是**修复与 DSH `0.1.5-rc.1` 的不兼容**（上游 1.8.0 在 DSH 0.1.5 上无法工作），
+> 此后又陆续加了：
 >
-> 上游最后提交 2026-08-27（`62e3805b`）。如果上游此后修复了同类问题，**建议优先用上游版本**。
+> - **Codex 引擎** —— 第三个引擎，本机 `codex` CLI 驱动，每轮一次 `codex exec` / `exec resume`
+> - **模型目录设置页** —— 增删改模型、隐藏内置项、按引擎分别设默认值
+> - **引擎注册表** —— 改引擎显示名、标「本地 / 远程」
+> - 若干修复：`assistant/message` 的 stream 契约（写错会永久写坏会话）、按引擎分开的模型默认值、下拉菜单定位
+> - `scripts/dev-restart-dsh.sh` —— 手起 profile 的重启，会先等在跑的轮次结束
+>
+> 上游最后提交 2026-08-27（`62e3805b`）。两边功能已经分叉，**不要默认以上游为准**。
 >
 > ### 装本 fork
 >
@@ -104,7 +111,7 @@
 ## 安装
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/GeekRicardo/claude-in-dsh/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/abcde55555/claude-in-dsh/main/install.sh | bash
 ```
 
 本地开发（用工作区目录而不是 GitHub 快照）：
