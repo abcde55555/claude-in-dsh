@@ -52,6 +52,30 @@ const host = {
     if (method === 'engines') {
       return Promise.resolve({ engines: { 'session-11111111-2222-4333-8444-555555555555': 'claude', 'session-99999999-8888-4777-8666-555555555555': 'dsh' } })
     }
+    // 设置面板那两节：给一份和 host 同形状的答案，好让它们真的渲染出内容
+    // （返回 {} 会让它们停在「正在读取…」，那就什么都没验到）。
+    if (method === 'models.get') {
+      return Promise.resolve({
+        path: '/Users/rig/.cache/ccmode/models.json',
+        models: [
+          { id: 'claude-opus-5', name: 'Claude Opus 5', reasoning: true, builtin: true, hidden: false },
+          { id: 'claude-haiku-4-5', name: 'Claude Haiku 4.5', reasoning: false, builtin: true, hidden: true },
+          { id: 'glm-5', name: 'GLM 5', reasoning: true, builtin: false, hidden: false },
+        ],
+        defaults: { claude: 'claude-opus-5', codex: '' },
+      })
+    }
+    if (method === 'agents.get') {
+      return Promise.resolve({
+        path: '/Users/rig/.cache/ccmode/agents.json',
+        sources: [{ id: 'local', name: '本地' }, { id: 'remote', name: '远程' }],
+        agents: [
+          { id: 'dsh', name: 'DSH', source: 'local' },
+          { id: 'claude', name: 'Claude（网关）', source: 'remote' },
+          { id: 'codex', name: 'Codex', source: 'local' },
+        ],
+      })
+    }
     if (method === 'usage') {
       return Promise.resolve({
         official: true, subscription: 'max',

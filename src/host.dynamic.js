@@ -394,6 +394,95 @@ return {
       return modelsState()
     }
 
+    // ---------- 引擎注册表（显示名 / 来源） ----------
+
+    /**
+     * 引擎注册表：每个引擎的**显示名**和**来源类型**。
+     *
+     * 只影响显示。执行层一个字没动：引擎 id 仍然只有 ENGINE_IDS 那三个，
+     * isEngineId 的语义不变。让用户在这里加一个第四种 id 是没有意义的 —— 没有
+     * 对应的执行路径，注册得进去只会让人以为它能用。
+     *
+     * 「来源」现在是纯标记，不是运行方式：三个引擎都由本机 CLI 执行，标成 remote
+     * 只是用户自己的注解（以后真接远程时它才是开关）。画在界面上就是本地/远程
+     * 两个字，不去改驱动方式。
+     */
+    // 路径常量放在 STATE_DIR 旁边（见下）：它是一个 `const ... = STATE_DIR + ...`，
+    // 写在 STATE_DIR 之前的话，apply() 一进到这里就是 TDZ 报错，插件整个起不来。
+    const DEFAULT_AGENT_NAMES = { dsh: 'DSH', claude: 'Claude Code', codex: 'Codex' }
+    const AGENT_SOURCES = [
+      { id: 'local', name: '本地' },
+      { id: 'remote', name: '远程' },
+    ]
+
+    function defaultAgents() {
+      const agents = {}
+      for (const id of ENGINE_IDS) agents[id] = { name: DEFAULT_AGENT_NAMES[id], source: 'local' }
+      return agents
+    }
+
+    /**
+     * 读 AGENTS_PATH。缺项、类型不对、不认识的 id 一律取出厂值。
+     *
+     * 这个文件是外部输入：一份写坏的注册表最坏也只能让某个引擎的名字难看，
+     * 不该让引擎座整个空掉，所以这里逐字段挑，而不是整份信任。
+     */
+    async function readAgentsFile() {
+      const agents = defaultAgents()
+      let raw = ''
+      try {
+        raw = await runCapture(['/bin/sh', '-c', 'cat ' + AGENTS_PATH + ' 2>/dev/null'], 3000)
+      } catch (error) { return agents }
+      let parsed = null
+      try { parsed = JSON.parse(String(raw || '').trim()) } catch (error) { return agents }
+      if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return agents
+      for (const id of ENGINE_IDS) {
+        const entry = parsed[id]
+        if (entry === null || typeof entry !== 'object' || Array.isArray(entry)) continue
+        const name = typeof entry.name === 'string' ? entry.name.trim() : ''
+        if (name.length > 0) agents[id].name = name
+        if (AGENT_SOURCES.some((source) => source.id === entry.source)) agents[id].source = entry.source
+      }
+      return agents
+    }
+
+    /**
+     * 一次注册表编辑 = 一份新文件。id 只能是已经能执行的那三个引擎 ——
+     * 这一条就是这个功能的边界：注册表管显示，不管「能不能跑」。
+     */
+    function applyAgentsEdit(agents, edit) {
+      const id = String(edit.id || '')
+      if (!isEngineId(id)) throw new Error('未知引擎：' + id + '（能执行的只有 ' + ENGINE_IDS.join(' / ') + '）')
+      const name = typeof edit.name === 'string' ? edit.name.trim() : ''
+      if (name.length === 0) throw new Error('显示名不能为空')
+      if (name.length > 40) throw new Error('显示名最多 40 个字符')
+      const source = String(edit.source || '')
+      if (!AGENT_SOURCES.some((entry) => entry.id === source)) {
+        throw new Error('来源类型只能是 ' + AGENT_SOURCES.map((entry) => entry.id).join(' / '))
+      }
+      const next = {}
+      for (const key of ENGINE_IDS) next[key] = { name: agents[key].name, source: agents[key].source }
+      next[id] = { name: name, source: source }
+      return next
+    }
+
+    /** 设置面板看到的注册表：三个引擎按 ENGINE_IDS 的顺序，附带来源类型的选项。 */
+    async function agentsState() {
+      const agents = await readAgentsFile()
+      return {
+        path: await expandHome(AGENTS_PATH),
+        sources: AGENT_SOURCES.map((entry) => ({ id: entry.id, name: entry.name })),
+        agents: ENGINE_IDS.map((id) => ({ id: id, name: agents[id].name, source: agents[id].source })),
+      }
+    }
+
+    /** 读 → 校验 → 原子写 → 回读（和 modelsEdit 同一条路子）。 */
+    async function agentsEdit(edit) {
+      const agents = await readAgentsFile()
+      await writeJsonFile(AGENTS_PATH, applyAgentsEdit(agents, edit))
+      return agentsState()
+    }
+
     /**
      * 一个模型 id 在这个引擎下能不能用。
      *
@@ -748,6 +837,8 @@ return {
      * applyModelsEdit。
      */
     const MODELS_PATH = STATE_DIR + '/models.json'
+    // 引擎注册表（显示名 / 来源标记），读法见 readAgentsFile。
+    const AGENTS_PATH = STATE_DIR + '/agents.json'
     let statePersistScheduled = false
     const runs = new Map()    // dsh sessionId -> resident claude run
     const activeTurns = new Map()  // dsh sessionId -> { turn, run } while a turn is open
@@ -5364,6 +5455,14 @@ return {
         op: 'default',
         engine: args.engine,
         model: args.model,
+      })),
+
+      // 引擎注册表：显示名 + 来源类型。执行层不认这份文件，它只改画出来的字。
+      harness.handle('agents.get', () => agentsState()),
+      harness.handle('agents.set', (args) => agentsEdit({
+        id: args.id,
+        name: args.name,
+        source: args.source,
       })),
 
       // dsh's attachment store rejects an image bigger than these; the client

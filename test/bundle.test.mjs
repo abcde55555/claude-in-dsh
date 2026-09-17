@@ -16,6 +16,42 @@ test('host half exports apply + inject', async () => {
   assert.deepEqual(mod.inject, ['webServer', 'subprocess', 'timer'])
 })
 
+test('宿主半能装配起来（初始化顺序的回归防线）', async () => {
+  // `const AGENTS_PATH = STATE_DIR + ...` 写在 STATE_DIR 之前时，import 和语法
+  // 检查都看不出问题，只有真的 apply() 会炸成 "Cannot access 'STATE_DIR' before
+  // initialization" —— 而它的表现是整个 dsh 起不来。所以这里用一套桩服务把它
+  // 装配一遍。
+  const mod = await import(path.join(root, 'lib/index.js'))
+  const routes = []
+  const effects = []
+  // 装配期不该真的起进程；真起了就是这里抛出来。
+  const subprocess = { spawn: () => { throw new Error('装配期不该 spawn') } }
+  const ctx = {
+    // 引擎体是先 `ctx.get('subprocess')` 再装配的，缺了它整半会直接 idle 返回
+    // ——那样这个测试就什么都没验到。
+    get: (name) => (name === 'subprocess' ? subprocess : undefined),
+    effect: (fn) => { effects.push(fn()); return () => {} },
+    interval: () => () => {},
+    timeout: () => () => {},
+    on: () => {},
+    provide: () => {},
+    webServer: { register: (route) => { routes.push(route); return () => {} } },
+  }
+  assert.doesNotThrow(() => mod.apply(ctx))
+  assert.equal(routes.length, 1)
+  assert.equal(routes[0].path, '/claude-in-dsh/rpc')
+  assert.equal(typeof routes[0].handler, 'function')
+  assert.ok(effects.length > 0)
+  // 引擎体装配完了才会挂上自己的 effect（interval / timeout 各一处以上）。
+  assert.ok(effects.length >= 2, '引擎体像是提前 idle 返回了')
+  // 桩服务什么都不做，但半个宿主也不该因此崩掉。
+  const answer = await routes[0].handler(
+    { headers: { host: '127.0.0.1:3081' }, on: (name, fn) => { if (name === 'end') fn() } },
+    { writeHead() {}, end() {} },
+  )
+  assert.equal(answer, undefined)
+})
+
 test('client half registers through the module loader', () => {
   const source = fs.readFileSync(path.join(root, 'lib/client.js'), 'utf8')
 
