@@ -2,6 +2,23 @@
 
 本文件记录 claude-in-dsh 的版本变化。遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## 1.11.1-dsh015 — 2026-09-17
+
+### 修复
+
+- **设置页「新会话的默认模型」把 Claude Code 和 DSH 写成了共享一行**。那行标题是
+  `Claude Code / DSH`，值是同一个槽位 —— 两处都错：
+
+  1. 它的值只喂 `claude --model`，**DSH 根本不吃**。dsh 的模型是 dsh 自己那套设置
+     （侧边栏「设置 → 模型」）管的，插件在 dsh 会话里连模型座都不挂（`acquireShadow`
+     只在 claude/codex 时调），`state.model` 在 dsh 路径上一处都没用。
+  2. 「共享」也不成立：`defaultModelFor` 里 claude 与 codex 本来就是分开的两个桶，
+     DSH 没有桶。
+
+  现在那行只写 `Claude Code`，并在 host 的 `persistStates` 里把那处
+  `state.mode === 'dsh' && state.model === DEFAULT_MODEL` 的跳过条件补上说明 ——
+  `defaults.model` 是 claude 那份，不是 dsh 的。
+
 ## 1.11.0-dsh015 — 2026-09-17
 
 ### 新增
