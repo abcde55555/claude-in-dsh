@@ -2,6 +2,31 @@
 
 本文件记录 claude-in-dsh 的版本变化。遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## 1.8.3-dsh015 — 2026-09-17
+
+### 修复
+
+- **自定义模型「能看见但选不上」**。1.8.2 把自定义模型加进了 `catalog`，但
+  `model.set` 等 **6 处**校验仍在查硬编码的 `MODELS` 常量，自定义 id 一律被判非法、
+  静默丢弃。现改为统一的 `isKnownModel()`（读文件后维护的 id 缓存），并在插件启动时
+  预热缓存 —— 顺序反了会让恢复会话状态时把自定义模型当非法值丢掉。
+
+- **`defaultModel` 不生效**。此前只写进 `catalog`，而 `catalog.defaultModel` 仅用于
+  客户端首帧的临时值；真正决定新会话模型的是 host 端持久化的 `defaults`。现在
+  `loadPersistedStates()` 会先用它播种 `defaults.model`（持久化的用户选择优先级更高）。
+
+### 变更
+
+- `models.json` 现在支持三种写法：
+  - `[ {...} ]` —— 只加模型
+  - `{ "models": [...], "defaultModel": "..." }` —— 两者都配
+  - `{ "defaultModel": "..." }` —— 只改默认
+
+### 验证
+
+选中 `deepseek-v4.1-flash` 后 chip 立即更新，且实际启动参数为
+`claude -p ... --model deepseek-v4.1-flash`，模型正常响应（6 秒，101 tok）。
+
 ## 1.8.2-dsh015 — 2026-09-16
 
 ### 修复
