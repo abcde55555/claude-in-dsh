@@ -1,2 +1,5 @@
 node_modules/
 *.log
+
+# 会话日志修复的本地备份（含对话内容，不入库）
+.session-repair-backups/

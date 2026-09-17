@@ -138,7 +138,7 @@ function clientPanel(answer, dom) {
   const end = src.indexOf('    // ---------- Claude badge')
   assert.ok(start > 0 && end > start, 'the panel corrector moved')
   const body = src.slice(start, end)
-  const make = new Function('document', 'host', 'currentClaudeSessionId', 'safelyClient',
+  const make = new Function('document', 'host', 'currentEngineSessionId', 'safelyClient',
     body + '; return { paintContextPanel, formatTokens }')
   return make(
     dom,

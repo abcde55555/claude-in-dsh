@@ -221,6 +221,38 @@ return {
      * 就没了 —— 里面可能是他自己都记不清的模型名和网关地址对不上的 id。所以先写
      * 同目录的临时文件再 rename：rename 是原子的，最坏只留下一个 .tmp。
      */
+    /**
+     * 把一段**原始字节**写到一个 shell word 指的路径上。
+     *
+     * 和 writeJsonFile 同一套路（不经过 shell 展开的 argv 需要真路径，所以调用方
+     * 负责把 "$HOME" 展开好），但没有 `.tmp` + `mv` 那一层：图片是内容寻址的
+     * 临时件，写坏了重写一份即可，不存在「覆盖掉用户唯一那份」的风险。
+     *
+     * 退出码照样要查 —— 磁盘满时 `cat >` 是**静默失败**的（#5 实测：写满小卷时
+     * 只留一个半截 .tmp），不看退出码就等于「写没写进去都报成功」。
+     */
+    function writeBinaryFile(shellPath, bytes) {
+      return new Promise((resolve, reject) => {
+        let proc
+        try {
+          proc = silenceStdin(subprocess.spawn({
+            argv: ['/bin/sh', '-c', 'mkdir -p "$(dirname ' + shellPath + ')" && cat > ' + shellPath],
+            cwd: '/',
+            stdio: { stdin: 'pipe', stdout: 'ignore', stderr: 'ignore' },
+            graceMs: 5000,
+          }))
+        } catch (error) { reject(error); return }
+        if (proc.stdin !== undefined) { proc.stdin.write(bytes); proc.stdin.end() }
+        proc.done.then((outcome) => {
+          if (outcome !== null && outcome !== undefined && outcome.exitCode !== 0) {
+            reject(new Error('写入 ' + shellPath + ' 失败（退出码 ' + String(outcome.exitCode) + '）'))
+            return
+          }
+          resolve()
+        }, (error) => reject(error))
+      })
+    }
+
     function writeJsonFile(shellPath, value) {
       const text = JSON.stringify(value, null, 2) + '\n'
       const tmp = shellPath + '.tmp'
@@ -4804,8 +4836,12 @@ return {
      *  - `--skip-git-repo-check` 必须有：dsh 的会话目录不一定是 git 仓库。
      *  - `--ephemeral` 绝不能用：用了就不落盘，resume 也就没了。
      *  - `--` 之后一律当位置参数，用户的第一句话可能是 `-` 开头。
+     *
+     * 图片走 `-i <FILE>`：**两个子命令都认**（`exec` 是「attach to the initial
+     * prompt」、`resume` 是「attach to the prompt sent after resuming」），但都
+     * 只收**文件路径**，不收 base64 —— 所以调用方先把字节落到临时文件里。
      */
-    function codexArgv(state, threadId, prompt) {
+    function codexArgv(state, threadId, prompt, imagePaths) {
       const argv = ['exec']
       if (typeof threadId === 'string' && threadId.length > 0) argv.push('resume', threadId)
       argv.push('--json', '--skip-git-repo-check')
@@ -4821,6 +4857,9 @@ return {
         argv.push('-c', 'model_reasoning_effort=' + JSON.stringify(state.effort))
       }
       if (typeof state.model === 'string' && state.model.length > 0) argv.push('-m', state.model)
+      for (const path of (Array.isArray(imagePaths) ? imagePaths : [])) {
+        if (typeof path === 'string' && path.length > 0) argv.push('-i', path)
+      }
       argv.push('--', prompt)
       return argv
     }
@@ -5243,10 +5282,27 @@ return {
 
       repairDanglingToolCalls(session)
 
+      // 粘贴的图片跟着这一轮走，和 Claude 那边同一个规矩：挂在最后一个真人消息上。
+      // Codex 只收**文件路径**（`-i`），所以字节得先落盘 —— 见下面 writeImages。
+      const stashed = pendingImages.get(sessionId) || []
+      pendingImages.delete(sessionId)
+      let imageTarget = -1
+      if (stashed.length > 0) {
+        for (let index = messages.length - 1; index >= 0; index -= 1) {
+          const source = messages[index].source
+          if (source === undefined || source.kind === 'user') { imageTarget = index; break }
+        }
+      }
+
       // The transcript shows what was actually said, the same way the Claude
       // path does it.
-      messages.filter((message) => !isCarrier(message)).forEach((message) => {
-        session.append('user/message', message, { surfaceOp: 'append' })
+      messages.filter((message) => !isCarrier(message)).forEach((message, index) => {
+        const shown = index === imageTarget
+          ? Object.assign({}, message, {
+              content: (message.content || []).concat(stashed.map((image) => ({ type: 'image', attachment: image.attachment }))),
+            })
+          : message
+        session.append('user/message', shown, { surfaceOp: 'append' })
       })
 
       // A turn dsh woke for plugin traffic alone is not a conversation. Codex
@@ -5274,17 +5330,24 @@ return {
       if (signal.aborted) return
       const startedAt = Date.now()
 
-      // 续接失败（thread 被清了、会话文件不在了）不该把这轮判死：丢掉坏 id
-      // 重开一条，对话还能继续，只是上下文没了。所以最多跑两轮。
-      let threadId = typeof state.codexThreadId === 'string' && state.codexThreadId.length > 0
-        ? state.codexThreadId
-        : null
-      let attempt = 0
-      while (true) {
-        const transcript = createCodexTranscript(session, turn, String(state.model || ''))
-        const argv = codexArgv(state, threadId, prompt)
-        console.log('cc-mode: codex', (threadId === null ? '开始新 thread' : '续接 ' + threadId),
-          'on', sessionId, '[' + (state.codexSandbox || DEFAULT_CODEX_SANDBOX) + (state.model ? '|' + state.model : '') + ']', 'in', cwd)
+      // 图片落在会话自己的临时目录里（不是会话 cwd —— 那里是用户的工作区，
+      // 而且 Codex 的沙箱档可能只读）。文件名带上时间戳与下标，避免同一轮重跑
+      // 时撞名；整批在轮末删掉。
+      const imagePaths = await writeCodexImages(sessionId, stashed)
+
+      try {
+        // 续接失败（thread 被清了、会话文件不在了）不该把这轮判死：丢掉坏 id
+        // 重开一条，对话还能继续，只是上下文没了。所以最多跑两轮。
+        let threadId = typeof state.codexThreadId === 'string' && state.codexThreadId.length > 0
+          ? state.codexThreadId
+          : null
+        let attempt = 0
+        while (true) {
+          const transcript = createCodexTranscript(session, turn, String(state.model || ''))
+          const argv = codexArgv(state, threadId, prompt, imagePaths)
+          console.log('cc-mode: codex', (threadId === null ? '开始新 thread' : '续接 ' + threadId),
+            'on', sessionId, '[' + (state.codexSandbox || DEFAULT_CODEX_SANDBOX) + (state.model ? '|' + state.model : '') + ']',
+            'in', cwd, imagePaths.length > 0 ? '（带 ' + imagePaths.length + ' 张图）' : '')
 
         let result
         try {
@@ -5318,7 +5381,46 @@ return {
         throw new Error('cc-mode: codex 没有给出 turn.completed 就结束了'
           + (result.exitCode === null || result.exitCode === 0 ? '' : '（退出码 ' + result.exitCode + '）')
           + (codexFailureText(result).length > 0 ? '：' + codexFailureText(result) : ''))
+        }
+      } finally {
+        // 图片只是喂给这一轮进程的输入，轮次一结束就没用了。
+        await removeCodexImages(imagePaths)
       }
+    }
+
+    /**
+     * 把暂存的图片写成 `codex -i` 要的文件，返回绝对路径。
+     *
+     * `-i` 只吃路径，不吃 base64，所以非落盘不可。放在 STATE_DIR 下的一个
+     * 每会话子目录里：既是插件自己的地盘（不会污染用户的工作区），也便于整批清理。
+     *
+     * 单张写失败不判死整轮 —— 图没了那句话还在，比整轮失败强。
+     */
+    async function writeCodexImages(sessionId, images) {
+      if (!Array.isArray(images) || images.length === 0) return []
+      const root = await expandHome(STATE_DIR + '/codex-images/' + sessionId)
+      const stamp = Date.now()
+      const paths = []
+      for (const [index, image] of images.entries()) {
+        const mediaType = String(image.mediaType || 'image/png')
+        const ext = mediaType === 'image/jpeg' ? 'jpg' : mediaType === 'image/webp' ? 'webp' : mediaType === 'image/gif' ? 'gif' : 'png'
+        const path = root + '/' + stamp + '-' + index + '.' + ext
+        try {
+          await writeBinaryFile(path, Buffer.from(String(image.data || ''), 'base64'))
+          paths.push(path)
+        } catch (error) {
+          console.error('cc-mode: 写 Codex 图片失败，这一张不带了:', errorText(error))
+        }
+      }
+      return paths
+    }
+
+    /** 整批删掉上一轮写出的图片。删不掉也不该影响轮次结果。 */
+    async function removeCodexImages(paths) {
+      if (!Array.isArray(paths) || paths.length === 0) return
+      try {
+        await runCapture(['/bin/sh', '-c', 'rm -f ' + paths.map(shellQuote).join(' ')], 3000)
+      } catch (error) { /* 临时文件，留一两个不影响 */ }
     }
 
     // ---------- the seam ----------

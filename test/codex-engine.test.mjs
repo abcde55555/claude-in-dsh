@@ -132,6 +132,32 @@ test('续接：resume <thread> 放在 exec 之后、选项之前', () => {
   assert.equal(configValue(argv, 'sandbox_mode'), '"read-only"')
 })
 
+test('图片走 -i，每张一个 -i，且落在 -- 之前', () => {
+  const rig = build()
+  const argv = rig.codexArgv(
+    { codexSandbox: 'workspace-write', model: 'x', effort: '' }, null, '这是什么颜色',
+    ['/tmp/a.png', '/tmp/b.jpg'])
+  const dashes = argv.indexOf('--')
+  const iAt = argv.map((v, i) => (v === '-i' ? i : -1)).filter((i) => i !== -1)
+  assert.equal(iAt.length, 2, '两张图就是两个 -i')
+  assert.deepEqual(iAt.map((i) => argv[i + 1]), ['/tmp/a.png', '/tmp/b.jpg'])
+  assert.ok(iAt.every((i) => i < dashes), '-i 是选项，必须在 -- 之前')
+  // exec 和 resume 都认 -i（实测），所以续接那一轮同样带得动图
+  const resumed = rig.codexArgv(
+    { codexSandbox: 'workspace-write', model: 'x', effort: '' }, '01a0ad21-6d98-72c3', '再看这张', ['/tmp/c.png'])
+  assert.equal(resumed[1], 'resume')
+  assert.ok(resumed.includes('-i') && resumed.includes('/tmp/c.png'))
+  assert.ok(resumed.indexOf('-i') < resumed.indexOf('--'))
+})
+
+test('没有图片时不出现 -i（别给 Codex 塞空参数）', () => {
+  const rig = build()
+  for (const value of [undefined, [], ['', null]]) {
+    const argv = rig.codexArgv({ codexSandbox: 'workspace-write', model: 'x', effort: '' }, null, '嗨', value)
+    assert.ok(!argv.includes('-i'), '没有可用路径就不该有 -i：' + JSON.stringify(value))
+  }
+})
+
 test('没选模型就不传 -m，让 Codex 用它自己 config.toml 里的 model', () => {
   const rig = build()
   const argv = rig.codexArgv({ codexSandbox: 'workspace-write', model: '', effort: '' }, null, '嗨')
