@@ -68,7 +68,8 @@ function build() {
     committedEngine: () => undefined,
   }
   const names = ['stateOf', 'rememberDefaults', 'rememberCodexSandbox', 'defaultModelFor']
-  const made = new Function('deps', `
+  const made = new Function('deps', `'use strict';
+
     const { ${Object.keys(deps).join(', ')} } = deps
     ${names.map(sliceFunction).join('\n')}
     return { ${names.join(', ')} }

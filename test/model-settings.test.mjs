@@ -93,7 +93,8 @@ function build(file) {
   }
   const names = ['isBuiltinModel', 'modelFitsEngine', 'readModelsFile', 'refreshKnownModels',
     'isKnownModel', 'expandHome', 'modelDisplayName', 'applyModelsEdit', 'modelsState', 'modelsEdit']
-  const made = new Function('deps', `
+  const made = new Function('deps', `'use strict';
+
     const { ${Object.keys(deps).join(', ')} } = deps
     let knownModelIds = new Set(MODELS.map((m) => m.id))
     let cachedDefaultModel = 'claude-opus-5'

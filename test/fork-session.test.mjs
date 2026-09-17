@@ -66,7 +66,8 @@ function build(world) {
       return world.transcriptMissing === true ? 0 : 4096
     },
   }
-  const fn = new Function('deps', `
+  const fn = new Function('deps', `'use strict';
+
     const { ${Object.keys(deps).join(', ')} } = deps
     ${sliceFunction('parentClaudeSession')}
     return parentClaudeSession

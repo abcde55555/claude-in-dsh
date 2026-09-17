@@ -87,7 +87,8 @@ function build(overrides) {
     'emptyConnection', 'readConnection', 'validateConnection', 'defaultAgents',
     'applyAgentsEdit', 'activeCodexProvider', 'codexConnectionArgs', 'writeClaudeSettingsFile',
   ]
-  const made = new Function('deps', `
+  const made = new Function('deps', `'use strict';
+
     const { ${Object.keys(deps).join(', ')} } = deps
     ${literal(/const AGENT_CONNECTION_FIELDS = \{[\s\S]*?\n    \}/, 'AGENT_CONNECTION_FIELDS')}
     ${literal(/const AGENT_SOURCES = \[[\s\S]*?\]/, 'AGENT_SOURCES')}

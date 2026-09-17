@@ -103,7 +103,8 @@ function build(file) {
   }
   const names = ['defaultAgents', 'readAgentsFile', 'applyAgentsEdit', 'agentsState', 'agentsEdit', 'expandHome',
     'emptyConnection', 'readConnection', 'validateConnection']
-  const made = new Function('deps', `
+  const made = new Function('deps', `'use strict';
+
     const { ${Object.keys(deps).join(', ')} } = deps
     const DEFAULT_AGENT_NAMES = { dsh: 'DSH', claude: 'Claude Code', codex: 'Codex' }
     let cachedHome = null

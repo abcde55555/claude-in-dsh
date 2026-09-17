@@ -76,7 +76,8 @@ function buildRead(home) {
       } catch (error) { return '' }
     },
   }
-  return new Function('deps', `
+  return new Function('deps', `'use strict';
+
     const { ${Object.keys(deps).join(', ')} } = deps
     ${sliceFunction('lastAiTitle')}
     return lastAiTitle
@@ -155,7 +156,8 @@ function buildWrite(world) {
       },
     },
   }
-  const fn = new Function('deps', `
+  const fn = new Function('deps', `'use strict';
+
     const { ${Object.keys(deps).join(', ')} } = deps
     ${sliceFunction('syncClaudeTitle')}
     return syncClaudeTitle

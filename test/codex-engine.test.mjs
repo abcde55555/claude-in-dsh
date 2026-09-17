@@ -69,7 +69,8 @@ function build() {
   const { sandboxes, fallback } = sandboxCatalog()
   const deps = { CODEX_SANDBOXES: sandboxes, DEFAULT_CODEX_SANDBOX: fallback }
   const names = ['codexArgv', 'codexUsageOf', 'uuid']
-  const made = new Function('deps', `
+  const made = new Function('deps', `'use strict';
+
     const { ${Object.keys(deps).join(', ')} } = deps
     ${names.map(sliceFunction).join('\n')}
     return { ${names.join(', ')} }
@@ -80,7 +81,8 @@ function build() {
 /** createCodexTranscript 只用得到 session.append、uuid 和两个常量。 */
 function transcriptRig() {
   const deps = { PROVIDER_CODEX: 'codex', NOTICE_MODEL: 'cc-mode/notice', uuid: build().uuid }
-  const made = new Function('deps', `
+  const made = new Function('deps', `'use strict';
+
     const { ${Object.keys(deps).join(', ')} } = deps
     ${sliceFunction('createCodexTranscript')}
     return { createCodexTranscript }

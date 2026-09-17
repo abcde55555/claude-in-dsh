@@ -63,7 +63,8 @@ function build(overrides) {
     ...overrides,
   }
   const names = ['idleNext', 'startIdleDrain', 'stopIdleDrain']
-  const made = new Function('deps', `
+  const made = new Function('deps', `'use strict';
+
     const { ${Object.keys(deps).join(', ')} } = deps
     ${names.map(sliceFunction).join('\n')}
     return { ${names.join(', ')} }
@@ -280,7 +281,8 @@ function buildFollow(world) {
     attach: async (run) => { calls.attached.push(run.offset) },
     startIdleDrain: (sessionId, run, offset) => { calls.followed.push(offset) },
   }
-  const fn = new Function('deps', `
+  const fn = new Function('deps', `'use strict';
+
     const { ${Object.keys(deps).join(', ')} } = deps
     ${sliceFunction('resumeIdleFollow')}
     return resumeIdleFollow

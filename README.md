@@ -8,7 +8,7 @@
 >
 > - **Codex 引擎** —— 第三个引擎，本机 `codex` CLI 驱动，每轮一次 `codex exec` / `exec resume`
 > - **模型目录设置页** —— 增删改模型、隐藏内置项、按引擎分别设默认值
-> - **引擎注册表** —— 改引擎显示名、标「本地 / 远程」
+> - **引擎注册表** —— 改引擎显示名、标「本地 / 远程」、配每个引擎自己的连接（baseUrl / key）
 > - 若干修复：`assistant/message` 的 stream 契约（写错会永久写坏会话）、按引擎分开的模型默认值、下拉菜单定位
 > - `scripts/dev-restart-dsh.sh` —— 手起 profile 的重启，会先等在跑的轮次结束
 >
@@ -72,9 +72,9 @@
 > }
 > ```
 >
-> - `defaultModel` —— Claude 与 DSH 共用的默认模型；`defaultCodexModel` —— Codex
->   自己的那一份，空串＝跟随 codex 的 `config.toml`。两者**必须分开**，共用会在
->   一边设默认时改掉另一边。
+> - `defaultModel` —— **Claude 引擎**那份默认模型（DSH 的模型由 dsh 自己那套设置管，
+>   插件不碰它）；`defaultCodexModel` —— Codex 自己的那一份，空串＝跟随 codex 的
+>   `config.toml`。两者**必须分开**，共用会在一边设默认时改掉另一边。
 > - `hidden` 里的 id 不再出现在任何引擎的模型座里（内置模型不能删，只能隐藏）。
 > - 简写仍然读得懂：整个文件是数组时就是纯 `models`，对象里也可以只写
 >   `defaultModel`。同 id 以内置为准；文件缺失或 JSON 非法时静默回退。
@@ -86,7 +86,19 @@
 ## 功能
 
 - **引擎选择器**：输入框里一个和模型选择器同款的下拉（`DSH | Claude Code | Codex`），按会话切换。三个引擎严格互斥 —— 一个会话跑过谁，就永远属于谁（从会话日志推断，重启不丢）。名字可以改，各带一个来源标记（本地 / 远程），见下面的「引擎注册表」。
-- **引擎注册表**：设置页里（侧边栏「设置」→「引擎」）改三个引擎的显示名和来源标记，存在 `~/.cache/ccmode/agents.json`。改完引擎座、模型座分组标题、会话徽章 tooltip 一起改口。**只改显示**：能被执行的引擎仍然只有那三个，源头与执行方式都没变。
+- **引擎注册表**：设置页里（侧边栏「设置」→「引擎」）改三个引擎的**显示名、来源标记与连接配置**，存在 `~/.cache/ccmode/agents.json`（600 权限 —— 里面可能有 key）。改完引擎座、模型座分组标题、会话徽章 tooltip 一起改口。
+
+  **显示名与来源只改显示**：能被执行的引擎仍然只有那三个，加不出第四个（没有对应的执行路径，注册得进去只会让人以为它能用）。
+
+  **连接配置是真的会生效的**，每个引擎能配的字段不同：
+
+  | 引擎 | 字段 | 怎么生效 |
+  |---|---|---|
+  | Claude Code | `baseUrl` / `apiKey` / `authToken` | 生成一份只含这几项的 settings 文件，启动时加 `--settings`（进程环境压不过用户的 `settings.json`，实测） |
+  | Codex | `baseUrl` / `apiKey` / `provider` | `-c model_providers.<当前 provider>.…` 覆盖；密钥走环境变量名，不进 argv |
+  | DSH | —— | 它的连接由 dsh 自己那套设置管，插件不碰 |
+
+  **留空 = 不覆盖**，仍读该引擎自己的配置（claude 读 `~/.claude/settings.json` 的 `env`，codex 读 `~/.codex/config.toml` 的 provider）。所以默认什么都不改。
 - **Codex 引擎**：本机 `codex` CLI 驱动，dsh 只负责渲染。和 Claude 那条路不同，它没有常驻进程：每一轮是一次 `codex exec`（首发）或 `codex exec resume <thread>`（之后每一轮），对话存在 Codex 自己的 thread store 里，插件只持久化 thread id。工具调用渲染成 dsh 原生卡片，出错时转录里看得到、会话不锁（换个能用的模型即可在同一 thread 续接）。注意两点：Codex 每轮重发完整历史（没有 token 级增量，成本明显高于 Claude 那条），且它的 provider 不认 `claude-*` 模型（必然 401，所以模型清单按引擎过滤）。
 - **Codex 的图片**：粘贴的图片走 `codex exec -i <FILE>`（`exec` 与 `resume` 都认），转录里按 dsh 原生附件显示。临时文件在轮末删掉。
 - **Codex 的「插话」**：跑轮次时 Ctrl/Cmd+Enter 的那条消息**不会折进当前轮**（Codex 一轮就是一个进程，没有 stdin 可写），而是**排进 inbox、跟下一轮一起送出去**。实测：插话 + 之后正常发的下一条会同时出现在下一轮的输入里，模型对两条都作答。所以「插话」在 Codex 会话里的效果等于「抢先排在队首」，不是「中途打断」。
@@ -152,7 +164,9 @@ lib/                生成产物：index.js（host, ESM）、client.js（ModuleL
 - broker 与进程：`/tmp/ccmode/<sessionId>/`（fifo `in`、追加日志 `out.log`、`meta.json`）
 - 每会话持久设置（权限档/模型/effort/Claude 会话 id）：`~/.cache/ccmode/state.json`
 - 模型目录（自定义模型 / 隐藏项 / 两个引擎的默认模型）：`~/.cache/ccmode/models.json`
-- 引擎注册表（显示名 / 来源标记）：`~/.cache/ccmode/agents.json`
+- 引擎注册表（显示名 / 来源标记 / 每个引擎的连接配置）：`~/.cache/ccmode/agents.json`（600 —— 里面可能有 key）
+- Claude 的连接覆盖（只在配了 baseUrl / key 时才生成）：`~/.cache/ccmode/agent-settings/claude.json`（600，清空配置时删掉）
+- Codex 图片的临时文件（每轮结束删）：`~/.cache/ccmode/codex-images/<sessionId>/`
 - RPC：同源 `POST /claude-in-dsh/rpc`（仅回环 + 同源，供本插件 client 半使用）
 
 ## License
