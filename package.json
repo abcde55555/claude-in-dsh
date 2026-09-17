@@ -1,6 +1,6 @@
 {
   "name": "claude-in-dsh",
-  "version": "1.11.1-dsh015",
+  "version": "1.12.0-dsh015",
   "description": "DeepSeek Harness web 插件：把一个会话交给本机 Claude Code CLI 或 Codex CLI 驱动。引擎选择器（DSH|Claude Code|Codex，显示名与本地/远程标记可改）、Claude 权限档替换访问模式、按引擎分开的模型清单与默认值、原生工具卡片与子 agent 嵌套、dsh 原生审批、命令面板并入 Claude 命令（一次性命令带外执行）、订阅用量读数、导入本机 Claude 对话、模型目录与引擎注册表设置页。Claude 进程由独立 broker 持有，插件更新与 dsh 重启都不中断它。",
   "type": "module",
   "main": "lib/index.js",

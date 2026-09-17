@@ -55,14 +55,42 @@ function engineLiterals() {
   return { ids: list, isEngineId: (value) => typeof value === 'string' && list.indexOf(value) !== -1 }
 }
 
+/** 每个引擎能配哪些连接字段，同样从源码里取。 */
+function connectionLiterals() {
+  const at = host.indexOf('const AGENT_CONNECTION_FIELDS = ')
+  assert.notEqual(at, -1, '找不到 AGENT_CONNECTION_FIELDS')
+  const from = host.indexOf('{', at)
+  let depth = 0
+  for (let i = from; i < host.length; i += 1) {
+    if (host[i] === '{') depth += 1
+    else if (host[i] === '}') {
+      depth -= 1
+      if (depth === 0) return new Function(`return ${host.slice(from, i + 1)}`)()
+    }
+  }
+  throw new Error('AGENT_CONNECTION_FIELDS 的花括号没有配平')
+}
+
 function build(file) {
   const { ids, isEngineId } = engineLiterals()
   const state = { text: file }
   const calls = { written: [], paths: [] }
+  const agentsPath = '"$HOME"/.cache/ccmode/agents.json'
+  // 写回注册表的那一步：这份测试只关心「写了什么、写到哪」。落盘怎么做到
+  // （临时文件 + chmod 600）由别的测试管。两个名字都备着：host 内部换个函数名
+  // 不该让整份测试失效。
+  const record = function (target, value) {
+    const single = arguments.length === 1
+    calls.written.push(single ? target : value)
+    calls.paths.push(single ? agentsPath : target)
+    state.text = JSON.stringify(single ? target : value, null, 2) + '\n'
+    return Promise.resolve()
+  }
   const deps = {
     ENGINE_IDS: ids,
     isEngineId: isEngineId,
-    AGENTS_PATH: '"$HOME"/.cache/ccmode/agents.json',
+    AGENT_CONNECTION_FIELDS: connectionLiterals(),
+    AGENTS_PATH: agentsPath,
     STATE_DIR: '"$HOME"/.cache/ccmode',
     AGENT_SOURCES: [
       { id: 'local', name: '本地' },
@@ -70,31 +98,34 @@ function build(file) {
     ],
     runCapture: (argv) => Promise.resolve(
       String(argv[2] || '').indexOf('printf %s "$HOME"') !== -1 ? '/Users/test' : state.text),
-    writeJsonFile: (target, value) => {
-      calls.written.push(value)
-      calls.paths.push(target)
-      state.text = JSON.stringify(value, null, 2) + '\n'
-      return Promise.resolve()
-    },
+    writeAgentsFile: record,
+    writeJsonFile: record,
   }
-  const names = ['defaultAgents', 'readAgentsFile', 'applyAgentsEdit', 'agentsState', 'agentsEdit', 'expandHome']
+  const names = ['defaultAgents', 'readAgentsFile', 'applyAgentsEdit', 'agentsState', 'agentsEdit', 'expandHome',
+    'emptyConnection', 'readConnection', 'validateConnection']
   const made = new Function('deps', `
     const { ${Object.keys(deps).join(', ')} } = deps
     const DEFAULT_AGENT_NAMES = { dsh: 'DSH', claude: 'Claude Code', codex: 'Codex' }
     let cachedHome = null
+    // readAgentsFile 会往这份缓存里写（host 里它是给同步的 connectionOf 用的）。
+    let agentsCache = defaultAgents()
     ${names.map(sliceFunction).join('\n')}
     return { ${names.join(', ')} }
   `)(deps)
   return { ...made, ids: ids, state: state, calls: calls }
 }
 
+/** 空串 = 不覆盖，用该引擎自己的配置；dsh 没有这一项。 */
+const EMPTY_CLAUDE_CONNECTION = { baseUrl: '', apiKey: '', authToken: '' }
+const EMPTY_CODEX_CONNECTION = { baseUrl: '', apiKey: '', provider: '' }
+
 test('没有注册表文件时，三个引擎是出厂的名字 + 本地', () => {
   const rig = build('')
   return rig.agentsState().then((state) => {
     assert.deepEqual(state.agents, [
-      { id: 'dsh', name: 'DSH', source: 'local' },
-      { id: 'claude', name: 'Claude Code', source: 'local' },
-      { id: 'codex', name: 'Codex', source: 'local' },
+      { id: 'dsh', name: 'DSH', source: 'local', connection: null },
+      { id: 'claude', name: 'Claude Code', source: 'local', connection: EMPTY_CLAUDE_CONNECTION },
+      { id: 'codex', name: 'Codex', source: 'local', connection: EMPTY_CODEX_CONNECTION },
     ])
     assert.equal(state.path, '/Users/test/.cache/ccmode/agents.json')
     assert.deepEqual(state.sources, [{ id: 'local', name: '本地' }, { id: 'remote', name: '远程' }])
@@ -106,9 +137,12 @@ test('改一个引擎的显示名和来源，另外两个原样不动', () => {
   return rig.agentsEdit({ id: 'claude', name: 'Claude（网关）', source: 'remote' }).then((state) => {
     const written = rig.calls.written[0]
     assert.deepEqual(Object.keys(written), rig.ids, '只写认识的引擎 id')
-    assert.deepEqual(written.claude, { name: 'Claude（网关）', source: 'remote' })
+    assert.deepEqual(written.claude, {
+      name: 'Claude（网关）', source: 'remote', connection: EMPTY_CLAUDE_CONNECTION,
+    })
+    // dsh 连 connection 这一项都不该有：它的连接不归这份注册表管。
     assert.deepEqual(written.dsh, { name: 'DSH', source: 'local' })
-    assert.deepEqual(written.codex, { name: 'Codex', source: 'local' })
+    assert.deepEqual(written.codex, { name: 'Codex', source: 'local', connection: EMPTY_CODEX_CONNECTION })
     assert.equal(state.agents.find((entry) => entry.id === 'claude').name, 'Claude（网关）')
   })
 })
@@ -145,8 +179,9 @@ test('写坏的行被逐个字段挑出来，不让整份注册表失效', () =>
   }))
   return rig.readAgentsFile().then((agents) => {
     assert.deepEqual(agents.dsh, { name: '我的 DSH', source: 'remote' }, '名字要去掉首尾空白')
-    assert.deepEqual(agents.claude, { name: 'Claude Code', source: 'local' }, '两项都非法就都取出厂值')
-    assert.deepEqual(agents.codex, { name: 'Codex', source: 'local' })
+    assert.deepEqual(agents.claude,
+      { name: 'Claude Code', source: 'local', connection: EMPTY_CLAUDE_CONNECTION }, '两项都非法就都取出厂值')
+    assert.deepEqual(agents.codex, { name: 'Codex', source: 'local', connection: EMPTY_CODEX_CONNECTION })
     assert.equal(agents.gpt, undefined, '不认识的 id 不进注册表')
   })
 })
@@ -173,6 +208,83 @@ test('执行层的引擎判断没被这份注册表动过', () => {
   assert.deepEqual(ids, ['dsh', 'claude', 'codex'])
   assert.equal(isEngineId('dsh'), true)
   assert.equal(isEngineId('gpt'), false)
+})
+
+// ---- 连接配置：这一栏的语义是「空串 = 不覆盖」 ----
+
+test('不传 connection 时，原有的连接配置一个字节都不动', () => {
+  // 这条最要紧：老的调用方只传 id/name/source。多了这一栏之后，**传 connection
+  // 是整个替换、不传是保持原样**——两者语义不同，别把前者当默认。
+  const rig = build(JSON.stringify({
+    claude: { name: 'Claude', source: 'local', connection: { baseUrl: 'https://gw.example.com', apiKey: 'sk-x', authToken: '' } },
+    codex: { name: 'Codex', source: 'local', connection: { baseUrl: 'https://codex.example.com', apiKey: '', provider: 'my-gw' } },
+  }))
+  return rig.agentsEdit({ id: 'claude', name: 'Claude（改名）', source: 'remote' }).then(() => {
+    const written = rig.calls.written[0]
+    assert.deepEqual(written.claude.connection,
+      { baseUrl: 'https://gw.example.com', apiKey: 'sk-x', authToken: '' }, '不传 connection：原样保留')
+    assert.deepEqual(written.codex.connection,
+      { baseUrl: 'https://codex.example.com', apiKey: '', provider: 'my-gw' }, '别的引擎的连接也不能被顺手冲掉')
+  })
+})
+
+test('传了 connection 就整个替换，空串 = 回到「不覆盖」', () => {
+  const rig = build(JSON.stringify({
+    claude: { name: 'Claude', source: 'local', connection: { baseUrl: 'https://old.example.com', apiKey: 'sk-old', authToken: 'tok-old' } },
+  }))
+  return rig.agentsEdit({
+    id: 'claude', name: 'Claude', source: 'local',
+    connection: { baseUrl: 'https://new.example.com', apiKey: '', authToken: '' },
+  }).then((state) => {
+    const expected = { baseUrl: 'https://new.example.com', apiKey: '', authToken: '' }
+    assert.deepEqual(rig.calls.written[0].claude.connection, expected, '没填的字段跟着回到空串，不是保留旧值')
+    assert.deepEqual(state.agents.find((entry) => entry.id === 'claude').connection, expected)
+  })
+})
+
+test('dsh 没有连接字段：给它 connection 会被拒，什么都不写', () => {
+  // dsh 的模型和连接归 dsh 自己那套设置管（客户端那一栏也不渲染）。UI 不传是
+  // 前端的事，host 这一侧同样得挡住 —— 两条路各自守住自己的边界。
+  const rig = build('')
+  return rig.agentsEdit({ id: 'dsh', name: 'DSH', source: 'local', connection: { baseUrl: 'https://x.example.com' } })
+    .then(() => assert.fail('dsh 不该有连接字段'), (error) => assert.match(error.message, /没有可配的连接字段/))
+    .then(() => assert.equal(rig.calls.written.length, 0))
+})
+
+test('连接字段的坏值被挑出来，不写坏注册表', () => {
+  const rig = build('')
+  return rig.agentsEdit({ id: 'codex', name: 'Codex', source: 'local', connection: { baseUrl: 'https://ok.example.com', provider: 42 } })
+    .then(() => assert.fail('类型不对该拒绝'), (error) => assert.match(error.message, /provider 必须是字符串/))
+    .then(() => rig.agentsEdit({ id: 'codex', name: 'Codex', source: 'local', connection: { apiKey: 'x'.repeat(501) } }))
+    .then(() => assert.fail('超长该拒绝'), (error) => assert.match(error.message, /apiKey 太长了/))
+    .then(() => assert.equal(rig.calls.written.length, 0))
+})
+
+test('agents.json 里写坏的连接配置只丢那一个字段，别的照读', () => {
+  // agents.json 是外部输入（手写、别的版本写的）：一份写坏的连接配置最坏只该让
+  // 那个引擎退回「用自己配置」，不该让整份注册表读不出来。
+  const rig = build(JSON.stringify({
+    claude: { name: 'Claude', source: 'local', connection: { baseUrl: 42, apiKey: '  sk-keep  ', authToken: null } },
+    codex: { name: 'Codex', source: 'local', connection: 'not an object' },
+    dsh: { name: 'DSH', source: 'local', connection: { baseUrl: 'https://ignored.example.com' } },
+  }))
+  return rig.readAgentsFile().then((agents) => {
+    assert.deepEqual(agents.claude.connection, { baseUrl: '', apiKey: 'sk-keep', authToken: '' },
+      '坏字段丢、好字段留、首尾空白去掉')
+    assert.deepEqual(agents.codex.connection, EMPTY_CODEX_CONNECTION, '整个不是对象就当没配')
+    assert.equal(agents.dsh.connection, undefined, 'dsh 连这一项都不该有')
+  })
+})
+
+test('agentsState 里 dsh 的 connection 是 null —— 客户端据此不画那一栏', () => {
+  const rig = build('')
+  return rig.agentsState().then((state) => {
+    const byId = {}
+    for (const entry of state.agents) byId[entry.id] = entry
+    assert.equal(byId.dsh.connection, null)
+    assert.deepEqual(byId.claude.connection, EMPTY_CLAUDE_CONNECTION)
+    assert.deepEqual(byId.codex.connection, EMPTY_CODEX_CONNECTION)
+  })
 })
 
 // ---- 客户端那半：每个显示引擎名的地方都读同一份注册表 ----

@@ -2,6 +2,62 @@
 
 本文件记录 claude-in-dsh 的版本变化。遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## 1.12.0-dsh015 — 2026-09-17
+
+### 新增
+
+- **每个引擎的连接配置可以改了**（「设置 → 引擎」里）。此前只能改显示名和来源标记，
+  而真正决定「连到哪、用哪个 key」的东西在别处、改不动：
+
+  | 引擎 | 配什么 | 怎么生效 |
+  |---|---|---|
+  | Claude Code | `baseUrl` / `apiKey` / `authToken` | 生成一份只含这几项的 settings 文件，启动时加 `--settings` |
+  | Codex | `baseUrl` / `apiKey` / `provider` | `-c model_providers.<当前 provider>.…` 覆盖 |
+  | DSH | —— | 它的连接由 dsh 自己那套设置管，插件不碰 |
+
+  **留空 = 不覆盖**，仍读该引擎自己的配置（claude 读 `~/.claude/settings.json` 的
+  `env`，codex 读 `~/.codex/config.toml` 的 provider）。所以默认什么都不改。
+
+  几个不能想当然的地方，都是实测定的：
+  - **claude 走 `--settings`，不走进程环境**。实测：`ANTHROPIC_BASE_URL` 用进程环境
+    覆盖**不生效**（settings.json 里的那份赢），而 `--settings` 压得住。而 `--settings`
+    是**叠加**语义 —— 只覆盖指定的几项，用户其它配置照旧。
+  - **claude 不能用内联 JSON**。broker 是以 `node broker.mjs <dir> <argv…>` 拉起来的，
+    内联 JSON 会让 apiKey 出现在**进程命令行**里（`ps` 可见）。所以落一份 600 的文件，
+    argv 里只传路径。
+  - **codex 覆盖的是当前那个 provider，不新建**。用户 config.toml 里的 provider 可能
+    带着必需的 `http_headers`（比如 opencode 的 `x-opencode-session`，缺了返回 451），
+    新建一个等于把这些丢掉、把本来能用的配置弄坏。
+  - **codex 的密钥不进 argv**：`-c` 只写环境变量的**名字**（codex 的 `env_key`），真值
+    走显式 env；变量名还特意避开 KEY/TOKEN 字样，躲开 dsh 的敏感名过滤。
+
+- 连接字段的写入/读取都做了校验：非字符串、超长、给 dsh 配连接一律拒掉；读入的坏值
+  逐个丢掉而不是让整份注册表失效。**不传 connection 时原有字段保持原样**（老的调用方
+  只传 id/name/source，不能被弄坏）。
+
+### 安全
+
+- `agents.json` 里可能有 key（用户选了明文存），所以写它时用 `umask 077` + `chmod 600`
+  + `mv`，而不是靠默认 umask（那是 644，同机任何用户都读得到）。
+- **清空覆盖时会删掉旧的 settings 文件**。不删的话，用户在 UI 里清掉 key 之后，那份
+  明文密钥还留在 `~/.cache/ccmode/agent-settings/claude.json` 里。
+- 密钥不写进任何日志（日志会进 dsh 的 stdout）。
+
+### 实测
+
+- claude：把 `baseUrl` 设成死端口 → 真机跑一轮 Claude 会话 → 转录里出现
+  `⚠ Claude Code 这一轮失败了：The operation timed out.`；清空后恢复正常。
+  settings 文件正确生成（600，只含两项）。
+- codex：覆盖当前 provider 的 `base_url` → 死端口 → `Connection failed`；
+  `env_key` 指向一个不存在的变量 → `Missing environment variable: …`（证明 codex
+  真会去读那个变量）；不动配置时 `turn.completed`。
+- 新增 `test/agent-connection.test.mjs` 18 条，全量 133 → **151 条**全绿。
+
+### 修复
+
+- `agents.set` 的 RPC handler 漏了把 `connection` 传给 `agentsEdit` —— 新字段写进去
+  会被静默丢掉。是在真机 E2E 里发现的（写进去读出来是空串）。
+
 ## 1.11.1-dsh015 — 2026-09-17
 
 ### 修复
