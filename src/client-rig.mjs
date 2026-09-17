@@ -37,14 +37,21 @@ const host = {
   call: (method, args) => {
     hostCalls.push(method)
     if (method === 'catalog') {
+      // 故意造出「当前模型被隐藏」的局面：它在 models（菜单列的那份）里没有，
+      // 只在 allModels（命名那份）里。见下面 hidden model 那条断言。
       return Promise.resolve({
         models: [{ id: '', name: 'default', reasoning: false }, { id: 'claude-sonnet-5', name: 'Claude Sonnet 5', reasoning: true }],
+        allModels: [
+          { id: '', name: 'default', reasoning: false },
+          { id: 'claude-sonnet-5', name: 'Claude Sonnet 5', reasoning: true },
+          { id: 'claude-opus-4-5', name: 'Claude Opus 4.5', reasoning: true },
+        ],
         efforts: [{ id: '', name: 'default' }, { id: 'high', name: 'high' }],
         permissionModes: [{ id: 'manual', name: 'manual', detail: 'ask' }, { id: 'acceptEdits', name: 'acceptEdits', detail: 'edits' }],
       })
     }
     if (method === 'state.get') {
-      return Promise.resolve({ mode: 'claude', permissionMode: 'manual', model: 'claude-sonnet-5', effort: 'high', running: true, committed: 'claude', locked: true })
+      return Promise.resolve({ mode: 'claude', permissionMode: 'manual', model: 'claude-opus-4-5', route: 'claude-opus-4-5', effort: 'high', running: true, committed: 'claude', locked: true })
     }
     if (method === 'commands') {
       return Promise.resolve({ commands: ['deep-research', 'verify', 'code-review', 'compact', 'usage'] })
@@ -189,6 +196,24 @@ function expand(node, depth) {
   return node
 }
 
+/** 在渲染出来的树里找 chip 上那行字（trigger 的 label）。 */
+function labelText(node, depth) {
+  const d = depth || 0
+  if (d > 300 || node === null || node === undefined || typeof node !== 'object') return null
+  if (Array.isArray(node)) {
+    for (const child of node) { const hit = labelText(child, d + 1); if (hit !== null) return hit }
+    return null
+  }
+  const kids = node.children === undefined ? [] : (Array.isArray(node.children) ? node.children : [node.children])
+  const cls = node.props && node.props.className
+  if (typeof cls === 'string' && cls.indexOf('triggerLabel') !== -1) {
+    for (const kid of kids) if (typeof kid === 'string') return kid
+    return ''
+  }
+  for (const kid of kids) { const hit = labelText(kid, d + 1); if (hit !== null) return hit }
+  return null
+}
+
 function render(component, props, label) {
   hookCells = []
   hookIndex = 0
@@ -232,7 +257,11 @@ for (const seat of seated) {
   }
 }
 
-// the seats acquired only while Claude drives are registered lazily; force them
+// the seats acquired only while Claude drives are registered lazily; force them.
+// 但必须先等 load() 落地：在此之前 stateOf 还是兜底的 dsh，引擎座的 effect 不会
+// 调 acquireShadow，影子座一个都注册不上 —— 这个台架此前一直报 «(none)»，
+// 意味着模型座、权限档座、图片轨这三块从来没被渲染过。
+await new Promise((r) => setTimeout(r, 50))
 const before = seated.length
 const engine = seated.find((s) => s.options.id === 'ccmode-engine')
 if (engine !== undefined) {
@@ -244,6 +273,27 @@ if (engine !== undefined) {
     try { render(seat.component, sessionProps, 'shadow') } catch (error) {
       failures += 1
       console.log('RENDER FAILURE', seat.options.name, seat.options.id, '→', error.message)
+    }
+  }
+}
+
+// ---- 被隐藏的模型仍该显示名字，而不是原始 id ----
+// 场景：会话正跑在 claude-opus-4-5 上，用户随后把它隐藏了 —— 菜单里不再列它，
+// 于是它只存在于 catalog.allModels。命名若去查菜单那份（models），chip 就会退成
+// 原始 id「claude-opus-4-5」，而不是「Claude Opus 4.5」。隐藏是「不再列出来」，
+// 不是「假装它不存在」：正跑在上面的会话仍该看得懂自己跑的是什么。
+{
+  const modelSeat = seated.find((s) => s.options.name === 'conversation.input.model')
+  if (modelSeat === undefined) {
+    failures += 1
+    console.log('HIDDEN MODEL: 模型座没注册上 —— 这条断言失去意义，别当成通过')
+  } else {
+    const shown = labelText(render(modelSeat.component, sessionProps, 'hidden-model'))
+    if (shown !== 'Claude Opus 4.5') {
+      failures += 1
+      console.log('HIDDEN MODEL LABEL FAILURE →', JSON.stringify(shown), '（应为 "Claude Opus 4.5"）')
+    } else {
+      console.log('hidden model label:', JSON.stringify(shown))
     }
   }
 }

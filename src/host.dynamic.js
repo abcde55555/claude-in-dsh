@@ -5422,6 +5422,13 @@ return {
           // models 是去掉隐藏项之后的清单：隐藏的意思就是「哪个引擎的模型座
           // 里都别再出现它」（见 readModelsFile）。
           models: answer.models,
+          // allModels 含被隐藏的，只给**命名**用。
+          //
+          // 模型座列的是上面那份，但一个正跑在某个被隐藏模型上的会话，chip 上
+          // 仍该是它的显示名 —— 隐藏是「不再列出来」，不是「假装它不存在」。
+          // 少了这份，客户端 find 不到就只能把原始 id 当名字显示出来
+          // （claude-opus-4-5 而不是「Claude Opus 4.5」）。
+          allModels: answer.all,
           efforts: EFFORTS,
           permissionModes: PERMISSION_MODES,
           codexSandboxes: CODEX_SANDBOXES,
