@@ -117,9 +117,13 @@ bash install.sh --link /path/to/claude-in-dsh --restart
 
 ## 维护
 
-改代码只改 `src/`，然后 `pnpm build`（或 `pnpm test`，会先 build 再跑 bundle 冒烟测试）。
+改代码只改 `src/`，然后 `pnpm build`（或 `pnpm test`，会先 build，再跑 bundle 冒烟测试、最后跑 `src/client-rig.mjs` 客户端台架）。
 
 重启 dsh 用 `bash scripts/safe-restart.sh`：它先确认没有进行中的 Claude 轮次再重启。直接 `pm2 restart` 会打断正在跑的轮次，在那个对话里留下 `TOOL_OUTCOME_UNKNOWN` 红卡（内容随后会被补播，但轮次已断）。
+
+手起的 profile（非 pm2）用 `bash scripts/dev-restart-dsh.sh`，它同样会先等在跑的轮次结束再停（`--force` 可跳过）。它的环境变量从 `~/.config/cid/env`（可选，`CID_ENV_FILE` 可覆盖）或正在跑的进程里读，所以进程起不来时也还能重启。
+
+**部署到 `~/.dsh/profiles/<profile>/node_modules/claude-in-dsh/` 时，`lib/*` 和 `package.json`、`dsh.plugin.json` 都要拷** —— 只拷 `lib/*` 会让 manifest 停在 pnpm 安装时的版本（插件是 `github:` 依赖，装的是副本，不是软链）。
 
 ## 结构
 

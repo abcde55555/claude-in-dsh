@@ -2,6 +2,33 @@
 
 本文件记录 claude-in-dsh 的版本变化。遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## 1.10.1-dsh015 — 2026-09-17
+
+### 修复
+
+- **重启脚本会打断别人正在跑的轮次**。`scripts/dev-restart-dsh.sh` 原来无条件先杀
+  旧进程；而重启 dsh 会杀掉它自己会话里在跑的轮次，crash recovery 把未完成的工具
+  调用结算成 `TOOL_OUTCOME_UNKNOWN`（对话里的红卡片）。改成**默认先等在跑的轮次
+  结束**（走插件自己的 `busy` RPC），超时才停并提示 `--force`。这条逻辑是从仓库里
+  既有的 `scripts/safe-restart.sh` 移植的 —— 那个脚本从 1.1.0 起就专门解决这件事，
+  早该先看它一眼。
+
+  「调用者自己就是目标实例里的一轮」这种情况本脚本不处理（等待永远等不完），会
+  明确报错让你改 `--force`；派脱离看门狗那套只有 `safe-restart.sh` 有。
+
+### 变更
+
+- **客户端台架（`src/client-rig.mjs`）现在递归展开嵌套组件，并接进 `pnpm test`**。
+  它此前只调用**顶层**注册组件的函数体 —— `h()` 桩不递归，所以任何只经由嵌套
+  `h(<Component>)` 到达的代码（本插件里就是那三处共享的下拉座位）从来没被执行过。
+  那让 `ALL COMPONENTS RENDER` 读起来像「客户端半边有覆盖」，而实测往嵌套组件里
+  注入一个必然的 ReferenceError，它照样报全绿。现在会真报失败。
+- 声明 `@deepseek-ai/dsh-client-ui-settings` 为客户端依赖（`dsh.client.inject`）。
+  设置页用的就是这个 slot 所有者，此前没声明 —— 实测不声明也能工作，但那是用了
+  未声明的依赖。**部署时记得连 `package.json` / `dsh.plugin.json` 一起拷**
+  （只拷 `lib/*` 会让 manifest 停在安装时的版本）。
+- `package.json` 的描述补上 Codex 引擎与两个设置页（原来还写着「引擎选择器（DSH|Claude）」）。
+
 ## 1.10.0-dsh015 — 2026-09-17
 
 ### 新增

@@ -160,11 +160,43 @@ console.log('inject declared:', JSON.stringify(plugin.inject))
 console.log('seats:', seated.map((s) => s.options.name + (s.options.id ? '#' + s.options.id : '') + (s.options.key ? ':' + s.options.key : '')).join(', ').slice(0, 400))
 
 // ---- render every seated component with plausible props --------------------
+/**
+ * 递归展开函数组件。
+ *
+ * 早先这里只调用**顶层**组件的函数体 —— `h()` 桩不递归，所以任何只经由嵌套
+ * `h(<Component>)` 到达的代码（这个插件里就是那三处共享的下拉座位）从来没被
+ * 执行过。那会让 `ALL COMPONENTS RENDER` 读起来像「客户端半边有覆盖」，而实测
+ * 往嵌套组件里注入一个必然的 ReferenceError，它照样报全绿。
+ *
+ * 只关心「会不会抛」，所以不重建树，就地展开。
+ */
+function expand(node, depth) {
+  if (depth > 80) throw new Error('组件递归超过 80 层（自引用？）')
+  if (node === null || node === undefined || typeof node !== 'object') return node
+  if (Array.isArray(node)) {
+    for (const child of node) expand(child, depth)
+    return node
+  }
+  const kids = node.children === undefined
+    ? []
+    : (Array.isArray(node.children) ? node.children : [node.children])
+  if (typeof node.type === 'function') {
+    // 函数组件：真的调一次，再展开它返回的东西。
+    expand(node.type({ ...node.props, children: kids.length <= 1 ? kids[0] : kids }), depth + 1)
+  } else {
+    for (const kid of kids) expand(kid, depth)
+  }
+  return node
+}
+
 function render(component, props, label) {
   hookCells = []
   hookIndex = 0
   effects.length = 0
   const tree = component(props)
+  // 先展开（嵌套组件的 effect 也在这一步里收集），再统一跑 effect ——
+  // 顺序和 React 不同，但这里只要「都执行过」。
+  expand(tree, 0)
   for (const fn of effects) { const cleanup = fn(); if (typeof cleanup === 'function') cleanup() }
   return tree
 }
